@@ -9,6 +9,7 @@ __pycache__/
 
 # Never publish per-deployment identity, environment values, runtime state or credentials.
 .openai/hosting.json
+**/.openai/hosting.json
 .env
 .env.*
 !.env.example

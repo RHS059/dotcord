@@ -1,6 +1,6 @@
 import { sqliteTable, text, integer, index, primaryKey } from 'drizzle-orm/sqlite-core';
 export const dots = sqliteTable('dots',{id:text('id').primaryKey(),agentType:text('agent_type').notNull().default('dot'),discordId:text('discord_id'),webhookUrl:text('webhook_url'),owner:text('owner').notNull(),created:text('created').notNull()});
-export const subscriptions = sqliteTable('subscriptions',{id:text('id').primaryKey(),owner:text('owner').notNull(),dot:text('dot').notNull(),url:text('url').notNull(),secret:text('secret').notNull(),expires:text('expires').notNull(),scope:text('scope').notNull().default('handle')});
+export const subscriptions = sqliteTable('subscriptions',{id:text('id').primaryKey(),owner:text('owner').notNull(),dot:text('dot').notNull(),url:text('url').notNull(),secret:text('secret').notNull(),expires:text('expires').notNull(),scope:text('scope').notNull().default('handle'),receiverId:text('receiver_id')});
 export const discords = sqliteTable('discords',{id:text('id').primaryKey(),owner:text('owner').notNull(),name:text('name').notNull(),connectionUrl:text('connection_url').notNull(),guildId:text('guild_id').notNull(),channelId:text('channel_id').notNull(),botToken:text('bot_token')});
 
 export const accounts = sqliteTable('accounts',{email:text('email').primaryKey(),userId:text('user_id'),primaryDot:text('primary_dot').unique(),role:text('role').notNull(),enabled:integer('enabled').notNull().default(1)});
@@ -45,3 +45,6 @@ export const accountOnboarding = sqliteTable('account_onboarding',{
 export const googleOauthSettings = sqliteTable('google_oauth_settings',{
  id:text('id').primaryKey(),clientId:text('client_id').notNull(),clientSecret:text('client_secret').notNull(),redirectUri:text('redirect_uri').notNull(),updated:text('updated').notNull()
 });
+
+// Account-scoped receiver credentials are hash-only and cannot send or read messages.
+export const receiverCredentials = sqliteTable('receiver_credentials',{id:text('id').primaryKey(),owner:text('owner').notNull(),name:text('name').notNull(),secretHash:text('secret_hash').notNull().unique(),created:text('created').notNull(),expires:text('expires').notNull()});

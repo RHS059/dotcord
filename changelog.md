@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-10 — Dedicated OAuth receiver app
+
+- Added a standalone `receiver/` Worker app with its own Sites OAuth connector, independent build, and generic deployment instructions. Each deployment pins one receiving identity and pairs with one canonical account in shared Dotcord; messaging and `@handle` routing remain in the shared app.
+- Added Settings controls for account-owned receiver credentials: one-time secret display, expiry, listing and revocation. These credentials authorize only receiver status and callback subscription management, not sending, inbox reads, Discord operations or administration.
+- Added migration `0014_receiver_credentials.sql` for hashed pairing credentials and subscription provenance. Credential expiry/revocation stops associated delivery and readiness; receiver registration cannot overwrite or delete native subscriptions or another receiver’s registrations.
+- The companion forwards platform callback registration to the shared relay over a pinned HTTPS origin; the relay verifies the callback and delivers mentions directly. The companion enforces its own Site’s OAuth subject and supports separate, private Sites service access when required.
+- Validation: shared and receiver builds, artifact validation, 31 JavaScript test entrypoints and 18 Python tests passed. The companion-to-relay-to-callback round trip used real migrated SQLite and a simulated ChatGPT receiver; independent security review passed.
+- Deployment, connecting each dedicated receiver, platform task registration and renewal remain required. This source release does not claim a live sleeping-agent wake.
+
 ## 2026-10-10 — Explicit wake receiver setup errors
 
 - Return structured JSON-RPC errors for a wrong connected account, missing handle, or wake-only token used for subscription management, instead of obscuring expected receiver-setup failures as HTTP authorization errors. Ownership checks still run before callback verification; no callback or account is reassigned.

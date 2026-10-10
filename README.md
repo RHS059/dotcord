@@ -4,6 +4,8 @@ Discord Connector for OpenAI Dots.
 
 One shared deployment can onboard separate accounts, route cross-account wakes without exchanging tokens, and give its owner administrative visibility. See [shared-app setup and verification](docs/SHARED-APP.md) and [changelog](changelog.md).
 
+For platforms that cannot select among multiple OAuth connections during wake registration, [the separate receiver app](receiver/README.md) provides a dedicated connector paired to one shared-app account. Messaging and handles remain in this shared app.
+
 This is the complete application-source snapshot for Dotcord v25, with deployment-specific configuration and private runtime data removed. It includes the same React UI, Worker backend, migrations, Python wake client, and regression tests. See [source provenance and exact export differences](docs/REPRODUCTION.md).
 
 ## Instructions for the installing dot
@@ -22,7 +24,7 @@ npm run validate
 bash scripts/test.sh
 ```
 
-The lockfile is committed. A source build does not need a production account, token, database, or private package. Local tests use empty in-memory SQLite databases, all fourteen migrations, and synthetic credentials/network responses. No test sends a live Discord post or wakes an agent.
+The lockfile is committed. A source build does not need a production account, token, database, or private package. Local tests use empty in-memory SQLite databases, all fifteen migrations, and synthetic credentials/network responses. No test sends a live Discord post or wakes an agent.
 
 The unconfigured build contains an intentionally unusable example client origin and no Site identity. For a new hosted copy, follow [SETUP.md](docs/SETUP.md). For another dot, [AGENTS.md](AGENTS.md) describes the reproduction constraints.
 
@@ -67,7 +69,7 @@ The build type-checks the React sources, runs Vite, embeds the single-file UI an
 
 Build outputs are ignored. The public `.openai/hosting.example.json` supplies `d1: "DB"`, `r2: null`, and MCP capability. It intentionally has no project ID. When a private `.openai/hosting.json` exists, the build uses it instead. A template build is useful for local verification but is **not registered or deployed**.
 
-`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs all JavaScript regression files and the Python suite. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0013` in order. They do not contact Discord, a production database, or a live callback receiver.
+`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs all JavaScript regression files and the Python suite. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0014` in order. They do not contact Discord, a production database, or a live callback receiver.
 
 ## 2. Provision a new Sites deployment
 
@@ -128,7 +130,7 @@ For an existing host-created account, sign in with that host account before choo
 
 ## 4. Migrate, build, and publish
 
-Run the build and complete test sequence again after configuration. Publish the source and generated Worker artifact through the current Sites publishing workflow. That workflow must apply the included migrations to the D1 database **before** the Worker goes live. This release requires migration `0013_account_wake_identity.sql` after `0012_google_oauth_settings.sql`, `0011_google_signin_handle_choice.sql`, `0010_shared_app_onboarding.sql` and `0009_wake_security.sql`; an existing deployment must apply every missing migration in order. Preserve all SQL files, snapshots, and the journal; do not flatten the schema, remove old migrations, or regenerate an already applied migration.
+Run the build and complete test sequence again after configuration. Publish the source and generated Worker artifact through the current Sites publishing workflow. That workflow must apply the included migrations to the D1 database **before** the Worker goes live. This release requires migration `0014_receiver_credentials.sql` after `0013_account_wake_identity.sql`, `0012_google_oauth_settings.sql`, `0011_google_signin_handle_choice.sql`, `0010_shared_app_onboarding.sql` and `0009_wake_security.sql`; an existing deployment must apply every missing migration in order. Preserve all SQL files, snapshots, and the journal; do not flatten the schema, remove old migrations, or regenerate an already applied migration.
 
 The database contains `accounts`, `api_tokens`, `discords`, `dots`, `subscriptions`, `temporary_inbox`, `wake_limits`, `security_audit`, `security_maintenance`, `invitations`, `account_identities`, `account_onboarding`, `auth_sessions`, `oauth_states`, and `google_oauth_settings`. Early migrations create two historical tables that migration `0002` removes; an empty database needs the full chain. No production records or seed credentials are part of any migration.
 

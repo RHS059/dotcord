@@ -25,7 +25,7 @@ The build type-checks the React sources, runs Vite, embeds the single-file UI an
 
 Build outputs are ignored. The public `.openai/hosting.example.json` supplies `d1: "DB"`, `r2: null`, and MCP capability. It intentionally has no project ID. When a private `.openai/hosting.json` exists, the build uses it instead. A template build is useful for local verification but is **not registered or deployed**.
 
-`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs all JavaScript regression files and the Python suite. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0013` in order. They do not contact Discord, a production database, or a live callback receiver.
+`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs all JavaScript regression files and the Python suite. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0014` in order. They do not contact Discord, a production database, or a live callback receiver.
 
 ## 2. Provision a new Sites deployment
 
@@ -86,7 +86,7 @@ For an existing host-created account, sign in with that host account before choo
 
 ## 4. Migrate, build, and publish
 
-Run the build and complete test sequence again after configuration. Publish the source and generated Worker artifact through the current Sites publishing workflow. That workflow must apply the included migrations to the D1 database **before** the Worker goes live. This release requires migration `0013_account_wake_identity.sql` after `0012_google_oauth_settings.sql`, `0011_google_signin_handle_choice.sql`, `0010_shared_app_onboarding.sql` and `0009_wake_security.sql`; an existing deployment must apply every missing migration in order. Existing Google users must sign in again after migration `0012`, which adds configuration-bound sessions. Preserve all SQL files, snapshots, and the journal; do not flatten the schema, remove old migrations, or regenerate an already applied migration.
+Run the build and complete test sequence again after configuration. Publish the source and generated Worker artifact through the current Sites publishing workflow. That workflow must apply the included migrations to the D1 database **before** the Worker goes live. This release requires migration `0014_receiver_credentials.sql` after `0013_account_wake_identity.sql`, `0012_google_oauth_settings.sql`, `0011_google_signin_handle_choice.sql`, `0010_shared_app_onboarding.sql` and `0009_wake_security.sql`; an existing deployment must apply every missing migration in order. Existing Google users must sign in again after migration `0012`, which adds configuration-bound sessions. Preserve all SQL files, snapshots, and the journal; do not flatten the schema, remove old migrations, or regenerate an already applied migration.
 
 The database contains `accounts`, `api_tokens`, `discords`, `dots`, `subscriptions`, `temporary_inbox`, `wake_limits`, `security_audit`, `security_maintenance`, `invitations`, `account_identities`, `account_onboarding`, `auth_sessions`, `oauth_states`, and `google_oauth_settings`. Early migrations create two historical tables that migration `0002` removes; an empty database needs the full chain. No production records or seed credentials are part of any migration.
 
@@ -133,3 +133,7 @@ Posts to Discord and live wakes are external actions. Local test success is not 
 - Subscription delivery and task execution require a compatible external receiver. No background subscription creator, scheduler, or callback retry job is included.
 - Inbox reads expire after 15 minutes; active-row cleanup is request-triggered, and provider backups are outside application deletion.
 - Browser verification and live end-to-end validation are separate from the synthetic test suite. Account/platform availability can prevent them even when the source builds correctly.
+
+## Separate receiver connector
+
+When the receiving platform cannot choose the correct connection on the shared connector, deploy the standalone [receiver app](../receiver/README.md). Use a dedicated connector for each receiving Dot and pair it through a receiver credential created while signed into that Dot’s shared-app account. Shared messages continue to resolve `@handle` to the account and its verified callback. Receiver credentials are distinct from wake tokens and cannot send messages. Deployment, OAuth connection and platform event registration must still be completed and verified.

@@ -106,16 +106,16 @@ async function wakeStatus(db,owner){
  const account=await stmt(db,'SELECT primary_dot FROM accounts WHERE user_id=?',owner).first();
  const profile=account?.primary_dot?await stmt(db,"SELECT d.id,c.id AS destination FROM dots d LEFT JOIN discords c ON c.id=d.discord_id WHERE d.id=? AND d.owner=? AND d.agent_type='dot'",account.primary_dot,owner).first():null;
  const choices=await stmt(db,"SELECT COUNT(*) n FROM dots WHERE owner=? AND agent_type='dot'",owner).first();
- const active=(await stmt(db,"SELECT scope,expires FROM subscriptions WHERE owner=? AND expires>? AND ((scope='account' AND ? IS NOT NULL) OR (scope='handle' AND dot=?))",owner,now(),profile?.id||null,profile?.id||null).all()).results;
- const accountSubs=(await stmt(db,"SELECT expires FROM subscriptions WHERE owner=? AND scope='account' AND expires>?",owner,now()).all()).results;
+ const active=(await stmt(db,"SELECT scope,expires FROM subscriptions s WHERE owner=? AND expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>?)) AND ((scope='account' AND ? IS NOT NULL) OR (scope='handle' AND dot=?))",owner,now(),now(),profile?.id||null,profile?.id||null).all()).results;
+ const accountSubs=(await stmt(db,"SELECT expires FROM subscriptions s WHERE owner=? AND scope='account' AND expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>?))",owner,now(),now()).all()).results;
  return {dot_id:profile?.id||null,selection_required:!profile&&choices.n>0,account_binding:'acct_'+await hash(owner),state:!profile?(choices.n?'selection_required':'profile_required'):(!profile.destination?'destination_required':active.length?'ready':'not_subscribed'),active_subscriptions:active.length,account_subscriptions:accountSubs.length,refresh_before:active.length?active.map(s=>s.expires).sort()[0]:(accountSubs.length?accountSubs.map(s=>s.expires).sort()[0]:null),subscription_required:!active.length,event:EVENT,filter:{account_binding:'acct_'+await hash(owner)}};
 }
-async function subscribe(db,owner,p,env){console.info(JSON.stringify({event:'subscription_request',callback_origin:(()=>{try{return new URL(p.delivery?.url).origin;}catch{return 'invalid';}})(),delivery_mode:p.delivery?.mode||null}));if(p.name!==EVENT)throw error('Unknown event.');const {dot,scope}=await subscriptionFilter(db,owner,p.arguments);if(p.delivery?.mode!=='webhook'||p.cursor!=null)throw error('Only webhook delivery without replay is supported.');const url=callbackURL(p.delivery.url,env);keyBytes(p.delivery.secret);if(p.ttlMs!==undefined&&p.ttlMs!==null&&(!Number.isSafeInteger(p.ttlMs)||p.ttlMs<60000))throw error('ttlMs must be at least 60000.');const expires=new Date(Date.now()+Math.min(p.ttlMs??604800000,604800000)).toISOString();const id='sub_'+await hash(JSON.stringify(scope==='handle'?[owner,url,EVENT,dot]:[owner,url,EVENT,{scope:'account'}]));const sub={id,url,secret:p.delivery.secret};const challenge=crypto.randomUUID();try{const r=await callback(env,sub,'verify_'+crypto.randomUUID(),{type:'verification',challenge});console.info(JSON.stringify({event:'callback_verification',status:r.status}));if(!r.ok||!equal((await r.json()).challenge,challenge))throw 0;}catch(e){console.warn(JSON.stringify({event:'callback_verification_failed',stage:e?.callbackStage||'response',category:e?.callbackCategory||'challenge_failed'}));throw error('Callback verification failed.',-32015,e?.reason==='timeout'?'timeout':'challenge_failed');}await stmt(db,'INSERT INTO subscriptions (id,owner,dot,url,secret,expires,scope) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET secret=excluded.secret,expires=excluded.expires',id,owner,dot,url,sub.secret,expires,scope).run();return {id,refreshBefore:expires,cursor:null,truncated:false};}
+async function subscribe(db,owner,p,env,receiver=null){console.info(JSON.stringify({event:'subscription_request',callback_origin:(()=>{try{return new URL(p.delivery?.url).origin;}catch{return 'invalid';}})(),delivery_mode:p.delivery?.mode||null}));if(p.name!==EVENT)throw error('Unknown event.');const {dot,scope}=await subscriptionFilter(db,owner,p.arguments);if(p.delivery?.mode!=='webhook'||p.cursor!=null)throw error('Only webhook delivery without replay is supported.');const url=callbackURL(p.delivery.url,env);keyBytes(p.delivery.secret);if(p.ttlMs!==undefined&&p.ttlMs!==null&&(!Number.isSafeInteger(p.ttlMs)||p.ttlMs<60000))throw error('ttlMs must be at least 60000.');const expires=new Date(Math.min(Date.now()+Math.min(p.ttlMs??604800000,604800000),receiver?Date.parse(receiver.expires):Infinity)).toISOString();const id='sub_'+await hash(JSON.stringify(receiver?[owner,url,EVENT,{scope:'account',receiver:receiver.id}]:scope==='handle'?[owner,url,EVENT,dot]:[owner,url,EVENT,{scope:'account'}]));const sub={id,url,secret:p.delivery.secret};const challenge=crypto.randomUUID();try{const r=await callback(env,sub,'verify_'+crypto.randomUUID(),{type:'verification',challenge});console.info(JSON.stringify({event:'callback_verification',status:r.status}));if(!r.ok||!equal((await r.json()).challenge,challenge))throw 0;}catch(e){console.warn(JSON.stringify({event:'callback_verification_failed',stage:e?.callbackStage||'response',category:e?.callbackCategory||'challenge_failed'}));throw error('Callback verification failed.',-32015,e?.reason==='timeout'?'timeout':'challenge_failed');}const saved=await stmt(db,'INSERT INTO subscriptions (id,owner,dot,url,secret,expires,scope,receiver_id) SELECT ?,?,?,?,?,?,?,? WHERE (? IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials WHERE id=? AND owner=? AND expires>?)) ON CONFLICT(id) DO UPDATE SET secret=excluded.secret,expires=excluded.expires',id,owner,dot,url,sub.secret,expires,scope,receiver?.id||null,receiver?.id||null,receiver?.id||null,owner,now()).run();if(receiver&&!saved.meta?.changes)throw error('Invalid, expired or revoked receiver credential.',-32001);return {id,refreshBefore:expires,cursor:null,truncated:false};}
 async function deliver(db,env,sub,event){
   let status='transient';let attempts=0;
   for(;attempts<3;attempts++){
     // Recheck current registration ownership and subscription on each attempt.
-    const active=await stmt(db,'SELECT s.id FROM subscriptions s JOIN dots d ON d.id=? AND s.owner=d.owner JOIN accounts a ON a.user_id=d.owner WHERE s.id=? AND s.expires>? AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND a.primary_dot=d.id))',event.data.dot_id,sub.id,now()).first();
+    const active=await stmt(db,'SELECT s.id FROM subscriptions s JOIN dots d ON d.id=? AND s.owner=d.owner JOIN accounts a ON a.user_id=d.owner WHERE s.id=? AND s.expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>?)) AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND a.primary_dot=d.id))',event.data.dot_id,sub.id,now(),now()).first();
     if(!active)return {status:'inactive',attempts};if(!await accountActive(env,sub.owner))return {status:'inactive',attempts};
     try{const r=await callback(env,sub,event.eventId,event);status=r.ok?'accepted':r.status===410?'gone':r.status===413?'oversized':r.status===429||r.status>=500?'transient':'rejected';}catch{status='transient';}
     if(status==='gone')await stmt(db,'DELETE FROM subscriptions WHERE id=?',sub.id).run();
@@ -190,7 +190,7 @@ if(message.channel_id!==target)return {sent:true,message_id:message.id,channel_i
 const source='https://discord.com/channels/'+c.guild_id+'/'+message.channel_id+'/'+message.id;let mention_delivery;try{mention_delivery=await tool(db,owner,'send_mention',{sender:d.id,message_id:message.id,text:content,source_url:source},env,origin,{guild_id:c.guild_id,parent_id:c.channel_id,thread_id:target,agent:d});}catch{mention_delivery={error:'Post sent; mention delivery failed. Do not repost.'};}return {sent:true,message_id:message.id,url:source,mention_delivery};}
 if(n==='set_discord'){await owned(db,a.dot_id,owner,admin);const conn=await stmt(db,'SELECT id FROM discords WHERE id=?',text(a.discord_id,100)).first();if(!conn)throw error('Select a configured Discord connection.');await stmt(db,'UPDATE dots SET discord_id=? WHERE id=?',conn.id,name(a.dot_id)).run();return {dot_id:name(a.dot_id),discord_id:conn.id};}
 if(n==='register_dot'){const id=name(a.dot_id);const type=a.agent_type||'dot';if(!['dot','agent'].includes(type))throw error('Choose Dot or Non-Dot Agent.');const connection=await stmt(db,'SELECT * FROM discords WHERE id=?',text(a.discord_id,100)).first();if(!connection)throw error('Select a configured Discord connection.');const existing=await stmt(db,'SELECT owner,agent_type FROM dots WHERE id=?',id).first();if(existing&&!admin&&existing.owner!==owner)throw error('This handle belongs to another account.',-32001);if(existing&&existing.agent_type!==type)throw error('This handle is already registered in the other category.');const webhook=a.webhook_url?parseWebhook(a.webhook_url):null;await db.batch([stmt(db,'INSERT INTO dots (id,owner,created,agent_type,discord_id,webhook_url) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET discord_id=excluded.discord_id,webhook_url=COALESCE(excluded.webhook_url,dots.webhook_url) WHERE dots.owner=excluded.owner AND dots.agent_type=excluded.agent_type',id,existing?.owner||owner,now(),type,connection.id,webhook),stmt(db,"UPDATE accounts SET primary_dot=? WHERE user_id=? AND primary_dot IS NULL AND EXISTS (SELECT 1 FROM dots WHERE id=? AND owner=? AND agent_type='dot') AND (SELECT COUNT(*) FROM dots WHERE owner=? AND agent_type='dot')=1",id,existing?.owner||owner,id,existing?.owner||owner,existing?.owner||owner)]);await owned(db,id,owner,admin);const status=await wakeStatus(db,existing?.owner||owner);return {dot_id:id,agent_type:type,registered:true,event:EVENT,filter:status.dot_id===id?status.filter:{dot_id:id,account_binding:status.account_binding}};}
-if(n==='list_dots')return (await stmt(db,'SELECT d.id AS dot_id,d.agent_type,d.discord_id,(d.owner=?) AS is_owned,(d.webhook_url IS NOT NULL) AS webhook_configured,(?=1 OR d.owner=?) AS can_manage,(SELECT COUNT(*) FROM subscriptions s WHERE s.owner=d.owner AND s.expires>? AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND EXISTS (SELECT 1 FROM accounts a WHERE a.user_id=d.owner AND a.primary_dot=d.id)))) AS subscriptions FROM dots d ORDER BY d.id',owner,admin?1:0,owner,now()).all()).results;
+if(n==='list_dots')return (await stmt(db,'SELECT d.id AS dot_id,d.agent_type,d.discord_id,(d.owner=?) AS is_owned,(d.webhook_url IS NOT NULL) AS webhook_configured,(?=1 OR d.owner=?) AS can_manage,(SELECT COUNT(*) FROM subscriptions s WHERE s.owner=d.owner AND s.expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>?)) AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND EXISTS (SELECT 1 FROM accounts a WHERE a.user_id=d.owner AND a.primary_dot=d.id)))) AS subscriptions FROM dots d ORDER BY d.id',owner,admin?1:0,owner,now(),now()).all()).results;
 if(n==='send_mention'){
 const sender=global?(globalToken.dot||globalToken.name):name(a.sender);
 // Unscoped wake tokens identify the saved label; scoped tokens identify their owned handle.
@@ -211,7 +211,7 @@ const globalTargets=new Map();if(directGlobal){for(const dot of recipients){if(!
 const timestamp=now();const results=[];
 for(const dot of recipients){
 if(!registered.includes(dot)){results.push({handle:dot,status:'unregistered'});continue;}
-const target=directGlobal?globalTargets.get(dot):await stmt(db,'SELECT c.* FROM dots d JOIN discords c ON d.discord_id=c.id WHERE d.id=?',dot).first();if(!target||(!directGlobal||globalToken?.dot)&&(target.guild_id!==connection.guild_id||target.channel_id!==connection.channel_id)){results.push({handle:dot,status:'different_discord'});continue;}const subs=(await stmt(db,'SELECT s.* FROM subscriptions s JOIN dots d ON s.owner=d.owner JOIN accounts a ON a.user_id=d.owner WHERE d.id=? AND s.expires>? AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND a.primary_dot=d.id))',dot,now()).all()).results;
+const target=directGlobal?globalTargets.get(dot):await stmt(db,'SELECT c.* FROM dots d JOIN discords c ON d.discord_id=c.id WHERE d.id=?',dot).first();if(!target||(!directGlobal||globalToken?.dot)&&(target.guild_id!==connection.guild_id||target.channel_id!==connection.channel_id)){results.push({handle:dot,status:'different_discord'});continue;}const subs=(await stmt(db,'SELECT s.* FROM subscriptions s JOIN dots d ON s.owner=d.owner JOIN accounts a ON a.user_id=d.owner WHERE d.id=? AND s.expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>?)) AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND a.primary_dot=d.id))',dot,now(),now()).all()).results;
 const recipient=await stmt(db,'SELECT owner FROM dots WHERE id=?',dot).first();
 if(!recipient||!await accountActive(env,recipient.owner)){results.push({handle:dot,status:'inactive',attempts:0});continue;}
 const cooldown=await reserveWake(db,dot);if(cooldown){results.push({handle:dot,status:'rate_limited',retry_after_seconds:cooldown,attempts:0});await securityAudit(env,global?'token:'+globalToken.id:await accountActor(owner),'wake','rate_limited',dot);continue;}
@@ -320,7 +320,8 @@ async function maintenance(env){
   stmt(env.DB,'DELETE FROM oauth_states WHERE id IN (SELECT id FROM oauth_states WHERE expires<=? LIMIT 100)',time),
   stmt(env.DB,'DELETE FROM auth_sessions WHERE id IN (SELECT id FROM auth_sessions WHERE expires<=? LIMIT 100)',time),
   stmt(env.DB,'DELETE FROM invitations WHERE id IN (SELECT id FROM invitations WHERE expires<=? LIMIT 500)',now()),
-  stmt(env.DB,'DELETE FROM subscriptions WHERE id IN (SELECT id FROM subscriptions WHERE expires<=? LIMIT 500)',now())
+  stmt(env.DB,'DELETE FROM subscriptions WHERE id IN (SELECT id FROM subscriptions WHERE expires<=? OR (receiver_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=subscriptions.receiver_id AND rc.expires>?)) LIMIT 500)',now(),now()),
+  stmt(env.DB,'DELETE FROM receiver_credentials WHERE id IN (SELECT id FROM receiver_credentials WHERE expires<=? LIMIT 100)',now())
  ]);
 }
 async function reserveWake(db,dot){
@@ -375,6 +376,51 @@ async function accountSettings(request,env,account,actor){
  const rows=(await stmt(env.DB,'SELECT email,role,enabled FROM accounts ORDER BY role DESC,email').all()).results.filter(a=>allowed.has(a.email));
  return json({accounts:await Promise.all(rows.map(async a=>({id:await hash(a.email),email:a.email,role:a.role,enabled:a.enabled})))});
 }
+
+async function receiverManagement(request,env,account,actor){
+ if(!['GET','POST','DELETE'].includes(request.method))return json({error:'Method not allowed'},405);
+ if(request.method==='GET')return json({receivers:(await stmt(env.DB,'SELECT id,name,created,expires FROM receiver_credentials WHERE owner=? ORDER BY created DESC,id',account.user_id).all()).results});
+ sameOrigin(request);const a=await readJSON(request,2000);
+ if(request.method==='DELETE'){
+  if(Object.keys(a).some(k=>k!=='id'))throw error('Unexpected argument.');const id=text(a.id,100);
+  if(!await stmt(env.DB,'SELECT id FROM receiver_credentials WHERE id=? AND owner=?',id,account.user_id).first())throw error('Receiver not found.',-32001);
+  await securityAudit(env,actor,'receiver_revoke','attempt',id);
+  await env.DB.batch([stmt(env.DB,'DELETE FROM receiver_credentials WHERE id=? AND owner=?',id,account.user_id),stmt(env.DB,'DELETE FROM subscriptions WHERE receiver_id=? AND owner=?',id,account.user_id)]);
+  await securityAudit(env,actor,'receiver_revoke','success',id);return json({deleted:true});
+ }
+ if(Object.keys(a).some(k=>!['name','expires_in_days'].includes(k)))throw error('Unexpected argument.');
+ const label=text(a.name,80).trim(),days=a.expires_in_days??30;
+ if(!label||![1,7,30,90].includes(days))throw error('Provide a name and lifetime of 1, 7, 30 or 90 days.');
+ const secret='dcr_'+btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'');
+ const receiver={id:crypto.randomUUID(),name:label,created:now(),expires:new Date(Date.now()+days*86400000).toISOString()};
+ await securityAudit(env,actor,'receiver_create','attempt',receiver.id);
+ const inserted=await stmt(env.DB,'INSERT INTO receiver_credentials (id,owner,name,secret_hash,created,expires) SELECT ?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM receiver_credentials WHERE owner=?)<20 RETURNING id',receiver.id,account.user_id,label,await hash(secret),receiver.created,receiver.expires,account.user_id).first();
+ if(!inserted)throw error('Revoke an existing receiver before creating another.');
+ await securityAudit(env,actor,'receiver_create','success',receiver.id);return json({receiver,secret},201);
+}
+async function receiverRequest(request,env){
+ if(request.method!=='POST')return json({error:'POST required'},405);
+ const match=/^Bearer (dcr_[A-Za-z0-9_-]{43})$/i.exec(request.headers.get('authorization')||'');
+ if(!match)throw error('Invalid, expired or revoked receiver credential.',-32001);
+ const receiver=await stmt(env.DB,'SELECT id,owner,expires FROM receiver_credentials WHERE secret_hash=? AND expires>?',await hash(match[1]),now()).first();
+ if(!receiver||!await accountActive(env,receiver.owner))throw error('Invalid, expired or revoked receiver credential.',-32001);
+ const actor='receiver:'+receiver.id;
+ await maintenance(env);const a=await readJSON(request);
+ if(Object.keys(a).some(k=>!['method','params'].includes(k))||!['status','subscribe','unsubscribe'].includes(a.method))throw error('Unsupported receiver operation.');
+ await securityAudit(env,actor,'receiver_'+a.method,'attempt');
+ try{
+  let result;
+  if(a.method==='status'){if(a.params!==undefined&&(!a.params||typeof a.params!=='object'||Array.isArray(a.params)||Object.keys(a.params).length))throw error('Unexpected argument.');result=await wakeStatus(env.DB,receiver.owner);const rows=(await stmt(env.DB,'SELECT expires FROM subscriptions WHERE receiver_id=? AND owner=? AND expires>?',receiver.id,receiver.owner,now()).all()).results;result={...result,receiver_subscriptions:rows.length,receiver_ready:result.state==='ready'&&rows.length>0,receiver_refresh_before:rows.length?rows.map(r=>r.expires).sort()[0]:null};}
+  else {
+   const p=a.params;
+   if(!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).some(k=>!['name','arguments','delivery','ttlMs','cursor'].includes(k))||p.name!==EVENT||p.arguments!==undefined&&(!p.arguments||typeof p.arguments!=='object'||Array.isArray(p.arguments)||Object.keys(p.arguments).length))throw error('Receiver subscriptions use the bound account with empty arguments.');
+   if(a.method==='subscribe')result=await subscribe(env.DB,receiver.owner,{...p,arguments:{}},env,receiver);
+   else {const url=callbackURL(p.delivery?.url,env);await stmt(env.DB,'DELETE FROM subscriptions WHERE receiver_id=? AND owner=? AND url=?',receiver.id,receiver.owner,url).run();result={};}
+  }
+  await securityAudit(env,actor,'receiver_'+a.method,'success');return json({result});
+ }catch(e){await securityAudit(env,actor,'receiver_'+a.method,e.code===-32001?'denied':'failed');throw e;}
+}
+
 async function tokenManagement(request,env,account,actor){
  if(!['GET','POST','DELETE'].includes(request.method))return json({error:'Method not allowed'},405);
  if(request.method!=='GET')sameOrigin(request);
@@ -519,9 +565,10 @@ export default {async fetch(request,env){
   if(!wakeClient)return json({error:'Client download is available in the built Site.'},503);
   return new Response(wakeClient,{headers:{'content-type':'text/x-python;charset=utf-8','content-disposition':'attachment; filename="dotcord_wake.py"','cache-control':'no-store','x-content-type-options':'nosniff'}});
  }
- if(!['/api/auth/google-settings','/api/auth/link-host','/api/tokens','/api/accounts','/api/account','/api/audit','/api/invitations','/api/onboarding','/mcp','/api/tool','/api/wake'].includes(path))return json({error:'Not found'},404);
+ if(!['/api/auth/google-settings','/api/auth/link-host','/api/receiver','/api/receivers','/api/tokens','/api/accounts','/api/account','/api/audit','/api/invitations','/api/onboarding','/mcp','/api/tool','/api/wake'].includes(path))return json({error:'Not found'},404);
  const rpc=result=>json({jsonrpc:'2.0',id:p.id??null,result});
  try{
+  if(path==='/api/receiver'){action='receiver';return await receiverRequest(request,env);}
   if(path==='/mcp'){
    if(request.method!=='POST')return json({error:'POST required'},405);
    // Reject hostile browser origins even for discovery; native OAuth MCP calls omit Origin.
@@ -558,6 +605,7 @@ export default {async fetch(request,env){
    return json({email:maskEmail(account.email),auth_method:account.auth_method,host_linked:Boolean(linked)||account.auth_method==='host',can_manage_accounts:account.role==='owner',needs_setup:status.state==='profile_required',profile:{dot_id,selection_required},wake});
   }
   if(path==='/api/accounts'){action='accounts';return await accountSettings(request,env,account,actor);}
+  if(path==='/api/receivers'){action='receivers';return await receiverManagement(request,env,account,actor);}
   if(path==='/api/tokens'){action='tokens';return await tokenManagement(request,env,account,actor);}
   if(path==='/api/audit'){
    action='audit_read';if(account.role!=='owner')throw error('Only the owner can read the security audit.',-32001);
@@ -573,7 +621,7 @@ export default {async fetch(request,env){
    action=p.method;if(token)throw error('Wake tokens cannot manage subscriptions. Use the receiving account OAuth connection.',-32017,'wake_token_cannot_subscribe');
    await securityAudit(env,actor,action,'attempt');let value;
    if(p.method==='events/subscribe')value=await subscribe(env.DB,owner,p.params||{},env);
-   else {const a=p.params||{};if(a.name!==EVENT)throw error('Unknown event.');const {dot,scope}=await subscriptionFilter(env.DB,owner,a.arguments);const callback=callbackURL(a.delivery?.url,env);await stmt(env.DB,'DELETE FROM subscriptions WHERE owner=? AND dot=? AND scope=? AND url=?',owner,dot,scope,callback).run();value={};}
+   else {const a=p.params||{};if(a.name!==EVENT)throw error('Unknown event.');const {dot,scope}=await subscriptionFilter(env.DB,owner,a.arguments);const callback=callbackURL(a.delivery?.url,env);await stmt(env.DB,'DELETE FROM subscriptions WHERE receiver_id IS NULL AND owner=? AND dot=? AND scope=? AND url=?',owner,dot,scope,callback).run();value={};}
    await securityAudit(env,actor,action,'success');return rpc(value);
   }
   const n=path==='/api/wake'?'send_mention':path==='/mcp'?p.params?.name:p.name;
@@ -593,6 +641,7 @@ export default {async fetch(request,env){
   const applicationError=Number.isInteger(e.code)&&e.code<0;
   const message=applicationError?e.message:'Operation failed';const status=applicationError?(e.status||(e.code===-32001?(actor==='anonymous'?401:403):400)):503;
   if(path==='/mcp'&&p)return json({jsonrpc:'2.0',id:p.id??null,error:{code:applicationError?e.code:-32603,message,...(applicationError&&e.reason?{data:{reason:e.reason}}:{})}},status===400?200:status);
+  if(path==='/api/receiver')return json({error:{code:applicationError?e.code:-32603,message,...(applicationError&&e.reason?{data:{reason:e.reason}}:{})}},status===400?200:status);
   return json({error:message},status);
  }
 },async scheduled(event,env,ctx){await maintenance(env);}};
