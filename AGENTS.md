@@ -1,6 +1,6 @@
 # Reproducing Dotcord
 
-This repository contains the complete application source for the documented v25 snapshot. Preserve its UI, behavior, authorization boundaries, and migration history when reproducing it. Read README.md, docs/SETUP.md, docs/REPRODUCTION.md, and SECURITY.md first.
+This repository contains the complete application source for the documented v25 baseline plus the authorized hardening described in docs/SECURITY-CHANGES.md. Preserve current behavior, authorization boundaries, and migration history when reproducing it. Read README.md, docs/SETUP.md, docs/REPRODUCTION.md, and SECURITY.md first.
 
 1. Use the checked-in lockfile with `npm ci`. The recorded toolchain is Node 24.19.0 / npm 11.9.0, plus Python 3.10+, curl, and bash.
 2. Run `npm run build`, `npm run validate`, and `bash scripts/test.sh`. Never describe mocked tests as a live Discord post, subscription, or sleeping-dot wake.

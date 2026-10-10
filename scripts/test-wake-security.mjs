@@ -1,0 +1,97 @@
+// Actual Worker, migrated SQLite, synthetic OAuth identities and mock callback receivers.
+import assert from 'node:assert/strict';
+import {DatabaseSync} from 'node:sqlite';
+import {readFileSync,readdirSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import worker from '../worker/index.js';
+const sql=new DatabaseSync(':memory:');
+const migrations=readdirSync('drizzle').filter(f=>f.endsWith('.sql')).sort();
+for(const f of migrations.filter(f=>!f.startsWith('0009')))sql.exec(readFileSync('drizzle/'+f,'utf8').replaceAll('--> statement-breakpoint',''));
+const legacy='l'.repeat(43),digest=v=>createHash('sha256').update(v).digest('hex');
+sql.prepare('INSERT INTO api_tokens (id,name,prefix,token_hash,created) VALUES (?,?,?,?,?)').run('legacy','Legacy','llll',digest(legacy),'2020-01-01');
+sql.exec(readFileSync('drizzle/0009_wake_security.sql','utf8').replaceAll('--> statement-breakpoint',''));
+const migrated=sql.prepare("SELECT * FROM api_tokens WHERE id='legacy'").get();assert.equal(migrated.owner,null);assert.ok(Math.abs(Date.parse(migrated.expires)-Date.now()-30*86400000)<5000);
+const DB={async batch(items){return Promise.all(items.map(i=>i.run()));},prepare(q){return {bind(...args){return {first:async()=>sql.prepare(q).get(...args)||null,all:async()=>({results:sql.prepare(q).all(...args)}),run:async()=>sql.prepare(q).run(...args)}}}}};
+const accounts=[{email:'owner@example.test',role:'owner'},{email:'member@example.test',role:'member'},{email:'receiver@example.test',role:'member'}];
+const env={DB,AUTHORIZED_ACCOUNTS:JSON.stringify(accounts)};
+const RealDate=Date;let time=RealDate.now();globalThis.Date=class extends RealDate{constructor(...a){super(...(a.length?a:[time]));}static now(){return time;}};
+let callbacks=0;const originalFetch=globalThis.fetch;
+globalThis.fetch=async(url,options)=>{callbacks++;assert.ok(url.startsWith('https://chatgpt.com/'));assert.ok(options.headers['webhook-signature']);return new Response(null,{status:204});};
+async function req(path,body,options={}){
+ const headers={'content-type':options.type||'application/json'};
+ if(options.token)headers.authorization='Bearer '+options.token;
+ else if(options.who!==null){const who=options.who||'owner';headers['oai-authenticated-user-id']=who;headers['oai-authenticated-user-email']=who+'@example.test';}
+ if(options.origin!==null)headers.origin=options.origin||'https://relay.test';
+ const r=await worker.fetch(new Request('https://relay.test'+path,{method:options.method||(body?'POST':'GET'),headers,...(body?{body:typeof body==='string'?body:JSON.stringify(body)}:{})}),options.env||env);
+ return {status:r.status,data:await r.json(),headers:r.headers};
+}
+const tool=(name,args,options)=>req('/api/tool',{name,arguments:args},options);
+let seq=0;const wake=(token,recipients=['target'])=>req('/api/wake',{message_id:'id-'+(++seq),text:'synthetic private message DO_NOT_LOG',recipients},{token});
+try{
+ for(const who of ['owner','member','receiver'])assert.equal((await req('/api/account',null,{who})).status,200);
+ const issue=await req('/api/tokens',{name:'Member wake',expires_in_days:1},{who:'member'});assert.equal(issue.status,201);const secret=issue.data.secret;
+ assert.equal(Date.parse(issue.data.token.expires)-time,86400000);assert.equal(sql.prepare('SELECT owner FROM api_tokens WHERE id=?').get(issue.data.token.id).owner,'member');
+ assert.equal(JSON.stringify(sql.prepare('SELECT * FROM api_tokens').all()).includes(secret),false);
+ const token2=(await req('/api/tokens',{name:'Owner wake',expires_in_days:90})).data.secret;
+ for(const days of [0,2,91,'30',null])assert.equal((await req('/api/tokens',{name:'Bad expiry',expires_in_days:days})).status,days===null?201:400);
+ for(const path of ['/api/accounts','/api/tokens','/api/account','/api/audit'])assert.equal((await req(path,null,{token:secret})).status,403,path);
+ assert.equal((await req('/api/tokens',{name:'Escalate'},{token:secret})).status,403);
+ for(const name of ['list_dots','list_discords','read_pending_message','acknowledge_message','register_dot','delete_agent','post_to_discord','read_discord'])assert.equal((await tool(name,{}, {token:secret})).status,403,name);
+ assert.equal((await req('/mcp',{id:1,method:'events/subscribe',params:{}},{token:secret})).status,403);
+ assert.equal((await req('/api/accounts',null,{who:'member'})).status,403);
+ assert.equal((await req('/api/audit',null,{who:'member'})).status,403);
+ assert.equal((await req('/api/tokens',null,{who:'member'})).data.tokens.length,1);
+ assert.equal((await req('/api/tokens',{id:'legacy'},{who:'member',method:'DELETE'})).status,403);
+ const destination=(await tool('add_discord',{name:'Test channel',channel_url:'https://discord.com/channels/123456789012345678/234567890123456789',bot_token:'synthetic_bot_token_1234567890'})).data;
+ for(const dot_id of ['target','second'])assert.equal((await tool('register_dot',{dot_id,discord_id:destination.id},{who:'receiver'})).status,200);
+ for(const dot of ['target','second'])sql.prepare('INSERT INTO subscriptions (id,owner,dot,url,secret,expires) VALUES (?,?,?,?,?,?)').run('sub_'+dot,'receiver',dot,'https://chatgpt.com/mock/'+dot,'whsec_'+Buffer.alloc(32,5).toString('base64'),'2099-01-01');
+ const first=await wake(secret);assert.equal(first.status,200);assert.equal(first.data.results[0].status,'accepted');assert.equal(callbacks,1);
+ assert.equal((await wake(token2)).status,429,'A second credential cannot bypass recipient cooldown');
+ assert.equal((await wake(secret)).headers.get('retry-after'),'15');
+ assert.equal((await tool('send_mention',{sender:'target',message_id:'session-limited',text:'@second'},{who:'receiver'})).status,200);
+ const sessionLimited=await tool('send_mention',{sender:'second',message_id:'session-limited2',text:'@target'},{who:'receiver'});assert.equal(sessionLimited.status,429,'OAuth shares same recipient cooldown');
+ time+=14999;assert.equal((await wake(secret)).status,429);time++;assert.equal((await wake(secret)).status,200,'Exact 15-second boundary');
+ time+=15000;const raced=await Promise.all(Array.from({length:10},()=>wake(secret)));assert.equal(raced.filter(r=>r.status===200).length,1,'Atomic database claim permits only one concurrent wake');
+ const mixed=await wake(secret,['target','second']);assert.equal(mixed.status,200);assert.deepEqual(mixed.data.results.map(r=>r.status),['rate_limited','accepted']);
+ const beforeCallbacks=callbacks;
+ const mcp={id:1,method:'tools/call',params:{name:'add_discord',arguments:{name:'CSRF',channel_url:'https://discord.com/channels/123456789012345678/234567890123456789',bot_token:'synthetic_bot_token_1234567890'}}};
+ assert.equal((await req('/mcp',mcp,{origin:'https://hostile.example',type:'text/plain'})).status,401);
+ assert.equal((await req('/mcp',mcp,{type:'text/plain'})).status,415);
+ assert.equal((await req('/mcp',{id:1,method:'tools/call',params:{name:'list_dots',arguments:{}}},{origin:null})).status,200,'Native OAuth MCP still works without Origin');
+ assert.equal((await req('/api/tool',{name:'list_dots',arguments:{}},{origin:'https://hostile.example'})).status,403);
+ assert.equal((await req('/api/tokens',{name:'CSRF'},{origin:'https://hostile.example'})).status,403);
+ assert.equal((await req('/api/wake','x'.repeat(20001),{token:secret})).status,413);
+ assert.equal((await req('/api/tokens','x'.repeat(2001))).status,413);
+ assert.equal((await req('/api/accounts','x'.repeat(2001))).status,413);
+ let pulls=0,cancelled=false;
+ const stream=new ReadableStream({pull(controller){pulls++;controller.enqueue(new Uint8Array(11000));},cancel(){cancelled=true;}},{highWaterMark:0});
+ const streamed=await worker.fetch(new Request('https://relay.test/api/wake',{method:'POST',headers:{authorization:'Bearer '+secret,'content-type':'application/json'},body:stream,duplex:'half'}),env);
+ assert.equal(streamed.status,413);assert.equal(cancelled,true);assert.ok(pulls<=2,'Stops consuming before buffering entire body');
+ env.AUTHORIZED_ACCOUNTS=JSON.stringify(accounts.filter(a=>a.email!=='member@example.test'));
+ assert.equal((await req('/api/account',null,{who:'member'})).status,401);assert.equal((await wake(secret)).status,401,'Issuer removal invalidates its tokens');
+ assert.equal((await req('/api/account')).status,200,'Owner recovery path remains available');
+ env.AUTHORIZED_ACCOUNTS=JSON.stringify(accounts.map(a=>a.email==='owner@example.test'?{...a,role:'member'}:a));assert.equal((await req('/api/accounts')).status,403,'Role downgrade is immediate');
+ env.AUTHORIZED_ACCOUNTS=JSON.stringify(accounts);
+ const receiverId=digest('receiver@example.test');assert.equal((await req('/api/accounts',{account_id:receiverId,enabled:false})).status,200);
+ time+=15000;assert.equal((await wake(secret)).data.results[0].status,'inactive');assert.equal(callbacks,beforeCallbacks);
+ assert.equal((await req('/api/accounts',{account_id:receiverId,enabled:true})).status,200);
+ env.AUTHORIZED_ACCOUNTS=JSON.stringify(accounts.filter(a=>a.email!=='receiver@example.test'));assert.equal((await wake(secret)).data.results[0].status,'inactive');env.AUTHORIZED_ACCOUNTS=JSON.stringify(accounts);
+ assert.equal((await req('/api/accounts',{account_id:digest('owner@example.test'),enabled:false})).status,400,'Cannot disable owner');
+ assert.equal((await req('/api/tokens',{id:issue.data.token.id},{who:'member',method:'DELETE'})).status,200);assert.equal((await wake(secret)).status,401);
+ const exp=(await req('/api/tokens',{name:'Expires',expires_in_days:1})).data;time=Date.parse(exp.token.expires);assert.equal((await wake(exp.secret)).status,401,'Expiry enforced at exact boundary');
+ // Legacy credentials remain usable only for wakes during their bounded migration window.
+ time=RealDate.now();sql.exec('DELETE FROM wake_limits');assert.equal((await wake(legacy)).status,200);assert.equal((await req('/api/accounts',null,{token:legacy})).status,403);
+ const audit=(await req('/api/audit')).data;assert.ok(audit.events.length);const auditText=JSON.stringify(sql.prepare('SELECT * FROM security_audit').all());
+ for(const forbidden of [secret,token2,'DO_NOT_LOG','synthetic_bot_token','owner@example.test','whsec_'])assert.equal(auditText.includes(forbidden),false,forbidden);
+ assert.ok(auditText.includes('rate_limited'));assert.ok(auditText.includes('token_revoke'));assert.ok(auditText.includes('denied'));
+ // Audit pagination, bounded retention and scheduled cleanup with no traffic.
+ const add=sql.prepare('INSERT INTO security_audit (id,created,actor,action,outcome,resource) VALUES (?,?,?,?,?,?)');
+ for(let i=0;i<10100;i++)add.run('fixture-'+i,new RealDate(time-1000).toISOString(),'test','test','success','');
+ await tool('list_dots',{});assert.equal(sql.prepare('SELECT COUNT(*) n FROM security_audit').get().n,10000);
+ const page=(await req('/api/audit')).data;assert.equal(page.events.length,100);assert.ok(page.next_cursor);
+ const page2=(await req('/api/audit?before='+encodeURIComponent(page.next_cursor))).data;assert.ok(page2.events.every(e=>!page.events.some(x=>x.id===e.id)));
+ sql.exec("UPDATE temporary_inbox SET expires='2000-01-01'; DELETE FROM security_maintenance");
+ await worker.fetch(new Request('https://relay.test/'),env);assert.ok(sql.prepare('SELECT COUNT(*) n FROM temporary_inbox').get().n>0,'Public static requests do not trigger cleanup');
+ await worker.scheduled({},env,{});assert.equal(sql.prepare('SELECT COUNT(*) n FROM temporary_inbox').get().n,0);
+ console.log('PASS wake security: wake-only scope, OAuth management, issuer ACL and role sync, ownership, expiration, legacy migration, cross-credential/OAuth concurrent cooldown, partial delivery, CSRF, streaming byte limits, secret-free bounded audit/pagination, scheduled cleanup, owner recovery. Synthetic fixtures only.');
+}finally{globalThis.Date=RealDate;globalThis.fetch=originalFetch;sql.close();}

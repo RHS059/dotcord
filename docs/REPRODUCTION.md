@@ -1,5 +1,7 @@
 # Source provenance and export differences
 
+The sections below describe the original v25 export. Current code includes the subsequently authorized changes in [SECURITY-CHANGES.md](SECURITY-CHANGES.md); the original application is no longer preserved byte-for-byte.
+
 This export corresponds to the Dotcord **v25 application source** at commit:
 
 `1411011dd4f47f4df65f8de31ee2fb9e57021ca2`

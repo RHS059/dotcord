@@ -1,0 +1,22 @@
+import {JSDOM} from 'jsdom';
+import {readFileSync} from 'node:fs';
+import assert from 'node:assert/strict';
+const html=readFileSync('client-build/index.html','utf8'),script=html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/)[1];
+const dom=new JSDOM(html,{url:'https://relay.test/?tab=settings',runScripts:'outside-only',pretendToBeVisual:true}),w=dom.window;
+w.ResizeObserver=class{observe(){}unobserve(){}disconnect(){}};w.HTMLElement.prototype.scrollIntoView=function(){};w.matchMedia=()=>({matches:false,addListener(){},removeListener(){}});
+let calls=0,fail=false;
+w.fetch=async(path)=>{
+ if(path==='/api/account')return Response.json({can_manage_accounts:true});
+ if(path==='/api/accounts')return Response.json({accounts:[]});
+ if(path==='/api/tool')return Response.json([]);
+ assert.ok(path.startsWith('/api/audit'));calls++;if(fail)return Response.json({error:'Audit unavailable.'},{status:503});
+ return Response.json({events:[{id:'row'+calls,created:'2026-10-10T16:00:00Z',actor:'token:synthetic',action:'wake',outcome: calls===1?'rate_limited':'accepted',resource:'target',count:1}],next_cursor:calls===1?'2026-10-10T16:00:00Z|abcdef':null});
+};
+const until=async f=>{for(let i=0;i<200;i++){if(f())return;await new Promise(r=>setTimeout(r,10));}throw Error('Audit UI timed out');};
+const button=t=>[...w.document.querySelectorAll('button')].find(b=>b.textContent.trim()===t);
+const click=b=>{assert.ok(b);b.dispatchEvent(new w.MouseEvent('click',{bubbles:true}));};
+w.eval(script);await until(()=>button('Refresh audit'));assert.equal(calls,0);
+click(button('Refresh audit'));await until(()=>w.document.body.textContent.includes('rate_limited'));assert.ok(button('Load older events'));
+click(button('Load older events'));await until(()=>w.document.body.textContent.includes('accepted'));assert.equal(button('Load older events'),undefined);
+fail=true;click(button('Refresh audit'));await until(()=>w.document.body.textContent.includes('Audit unavailable.'));assert.ok(w.document.body.textContent.includes('accepted'));
+dom.window.close();console.log('PASS owner audit UI: explicit refresh, rendering, older-page loading and non-destructive error state. API mocked.');

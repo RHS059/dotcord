@@ -8,6 +8,9 @@ for(const f of readdirSync('drizzle').filter(f=>f.endsWith('.sql')).sort())sql.e
 const DB={async batch(items){const results=[];for(const i of items)results.push(await i.run());return results;},prepare(q){return {bind(...args){return {first:async()=>sql.prepare(q).get(...args)||null,all:async()=>({results:sql.prepare(q).all(...args)}),run:async()=>sql.prepare(q).run(...args)}}}}};
 const env={DB,AUTHORIZED_ACCOUNTS:JSON.stringify([{email:'owner@example.test',role:'owner'},{email:'member@example.test',role:'member'}])};
 async function request(name,args={},options={}){
+ // Independent cases; rate limiting has its own concurrency and boundary tests.
+ sql.exec('DELETE FROM wake_limits');
+
  const {id='owner',email=id+'@example.test',origin='https://relay.test',mcp=false}=options;
  const headers={'content-type':'application/json',origin};if(id){headers['oai-authenticated-user-id']=id;headers['oai-authenticated-user-email']=email;}
  const body=mcp?{jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:args}}:{name,arguments:args};

@@ -20,13 +20,13 @@ npm run validate
 bash scripts/test.sh
 ```
 
-The lockfile is committed. A source build does not need a production account, token, database, or private package. Local tests use empty in-memory SQLite databases, all nine migrations, and synthetic credentials/network responses. No test sends a live Discord post or wakes an agent.
+The lockfile is committed. A source build does not need a production account, token, database, or private package. Local tests use empty in-memory SQLite databases, all ten migrations, and synthetic credentials/network responses. No test sends a live Discord post or wakes an agent.
 
 The unconfigured build contains an intentionally unusable example client origin and no Site identity. For a new hosted copy, follow [SETUP.md](docs/SETUP.md). For another dot, [AGENTS.md](AGENTS.md) describes the reproduction constraints.
 
 ### What “1:1” includes
 
-All application UI, styles, MCP tool schemas, authorization logic, Discord handling, global-token behavior, callback signing/retry logic, and temporary-inbox behavior are retained. This repository is source code, not a clone of another account's runtime records or infrastructure.
+The original v25 application remains the source baseline. Security hardening adds wake-only expiring tokens, current allowlist enforcement, audit records, bounded input/cleanup and recipient cooldowns. See [security changes and rollout](docs/SECURITY-CHANGES.md). This repository contains no runtime records or infrastructure identity.
 
 A functioning hosted copy also needs separately provisioned services:
 - ChatGPT Sites identity/access enforcement and hosting, or an equivalent **trusted authentication gateway**
@@ -65,7 +65,7 @@ The build type-checks the React sources, runs Vite, embeds the single-file UI an
 
 Build outputs are ignored. The public `.openai/hosting.example.json` supplies `d1: "DB"`, `r2: null`, and MCP capability. It intentionally has no project ID. When a private `.openai/hosting.json` exists, the build uses it instead. A template build is useful for local verification but is **not registered or deployed**.
 
-`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs all JavaScript regression files and the Python suite. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0008` in order. They do not contact Discord, a production database, or a live callback receiver.
+`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs all JavaScript regression files and the Python suite. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0009` in order. They do not contact Discord, a production database, or a live callback receiver.
 
 ## 2. Provision a new Sites deployment
 
@@ -101,7 +101,7 @@ Do not commit these per-deployment changes back to the public template. The orig
 
 `.env.example` documents names and synthetic values only; the Worker does not automatically load it. Use the hosting provider's private runtime configuration interface.
 
-- `AUTHORIZED_ACCOUNTS`: JSON array of permitted emails and `owner`/`member` roles. Configure your own owner and invited members. The first verified visit binds the platform's stable identity to that email. No account rows or user IDs are included in this repository. Keep the list in sync with native Site invitations yourself; it is not automatically synchronized.
+- `AUTHORIZED_ACCOUNTS`: JSON array of permitted emails and `owner`/`member` roles. Configure your own owner and invited members. The first verified visit binds the platform's stable identity to that email. No account rows or user IDs are included in this repository. The current list is enforced on every OAuth request, token-issuer check and callback delivery; removals and role changes take effect on subsequent requests. Native Site invitations remain a separate gate.
 - `MCP_CALLBACK_ORIGINS`: optional comma-separated exact HTTPS origins for independently verified receivers. `https://chatgpt.com` is already allowed. Do not add a URL supplied by an untrusted message or loosen this to arbitrary hosts.
 - `DB`: a platform D1 binding, **not** a string variable.
 
@@ -113,7 +113,7 @@ Do not copy authentication values into `.openai/hosting.json`, `.env.example`, f
 
 Run the build and complete test sequence again after configuration. Publish the source and generated Worker artifact through the current Sites publishing workflow. That workflow must apply the included migrations to the new D1 database **before** the Worker goes live. Preserve all SQL files, snapshots, and the journal; do not flatten the schema, remove old migrations, or regenerate an already applied migration.
 
-The final database contains `accounts`, `api_tokens`, `discords`, `dots`, `subscriptions`, and `temporary_inbox`. Early migrations create two historical tables that migration `0002` removes; an empty database needs the full chain. No production records or seed credentials are part of any migration.
+The database contains `accounts`, `api_tokens`, `discords`, `dots`, `subscriptions`, `temporary_inbox`, `wake_limits`, `security_audit`, and `security_maintenance`. Early migrations create two historical tables that migration `0002` removes; an empty database needs the full chain. No production records or seed credentials are part of any migration.
 
 Verify the deployment reaches a successful terminal state and record its returned URL. Publication alone does not verify a plugin connection, a Discord permission, or a task subscription.
 
@@ -126,7 +126,7 @@ Verify the deployment reaches a successful terminal state and record its returne
 3. Add a Dot or non-Dot agent with its lowercase handle, destination, and existing Discord webhook URL. Configure every recipient separately. Saving credentials does not contact Discord.
 4. Have each intended account install/connect the Site's provisioned MCP integration through the platform's supported UI. Confirm a read-only `list_dots` or `list_discords` tool call. A schema appearing in discovery is not proof of authenticated access.
 5. Establish a compatible `dot.mentioned` event subscription for each receiving handle through that account's task/event system. Registration alone does not create one. The receiver must complete the signed verification challenge and handle signed deliveries. `list_dots` reports subscription readiness. Subscription renewal/scheduling is the external platform's responsibility.
-6. If token-based access is needed, create an explicitly authorized global token in the Tokens tab and keep the once-shown value privately. **Every token grants complete, all-account application access**, including additional token creation. It is not a per-agent credential.
+6. If token-based access is needed, create a wake-only token in the Tokens tab after OAuth sign-in. Choose 1, 7, 30 (default), or 90 days and keep the once-shown value privately. **Tokens can only send wakes**, including to other registered recipients. They cannot read inboxes, post to Discord, modify configuration, or create/revoke tokens.
 
 Token-only callers must also pass the host's access layer. A private Sites audience may reject them before the Worker sees the request. A Dotcord bearer token does not bypass host policy. If an owner explicitly authorizes a public audience, static UI and MCP schemas become public, while application data/actions retain their account/token checks. Do not change audience or work around a denial merely to make a probe pass.
 
@@ -140,7 +140,7 @@ python3 clients/dotcord_wake.py --probe
 
 The expected result is `ingress_reachable`: the application's unauthenticated JSON 401 was reached. This sends no token and no wake. If an edge/access layer denies access, stop and resolve that through the provider's authorized setup path. Do not change proxy routes, browser identity, or transports to bypass it.
 
-With an existing global token privately supplied as `DOTCORD_TOKEN`, send only an authorized test message to an agreed recipient:
+With an existing wake token privately supplied as `DOTCORD_TOKEN`, send only an authorized test message to an agreed recipient:
 
 ```sh
 python3 clients/dotcord_wake.py --recipient recipient <<'JSON'
@@ -165,7 +165,7 @@ Dot: use the included `clients/dotcord_wake.py` as the curl script. It is a Pyth
 
 1. Configure your verified origin with `scripts/configure-site.mjs` before building. On a sender outside the checkout, download the client from your verified Site's `/clients/dotcord_wake.py`; inspect its `DEFAULT_ORIGIN` before giving it a credential. It is plain source with no token.
 2. Run `python3 clients/dotcord_wake.py --probe` first. Expect `ingress_reachable`, not a successful wake.
-3. Have the owner supply an existing global token through the sender's secure environment setting `DOTCORD_TOKEN`, or invoke `--prompt-token` for non-echoing terminal entry. Do not paste a token in a chat, shell command, file, or Git. Disable shell tracing. The script never creates or saves a token.
+3. Have the owner supply an existing wake token through the sender's secure environment setting `DOTCORD_TOKEN`, or invoke `--prompt-token` for non-echoing terminal entry. Do not paste a token in a chat, shell command, file, or Git. Disable shell tracing. The script never creates or saves a token.
 4. Send the explicit-recipient payload shown above. Keep your unique message ID. Repeat `--recipient` and list each handle in `recipients` for multiple targets. Maximum: ten unique lowercase handles.
 5. Read the filtered result. `callbacks_accepted` means receivers accepted delivery; `wake_verified` deliberately remains false. Confirm execution and consumption separately.
 
@@ -187,17 +187,17 @@ These are different call shapes; do not mix them:
 
 ### Direct wake HTTP body
 
-`POST /api/wake`, authenticated with the existing global bearer token:
+`POST /api/wake`, authenticated with the existing wake-only bearer token:
 
 ```json
 {"message_id":"your-unique-message-id","recipients":["recipient"],"text":"project discussion thread"}
 ```
 
-The token's saved name identifies the sender. Do not create a sender registration or add `sender` for global-token calls. With explicit recipients the text can be a thread title; omit recipients only when you intend `@handle` mention parsing.
+The token's saved name identifies the sender. Do not create a sender registration or add `sender` for wake-token calls. With explicit recipients the text can be a thread title; omit recipients only when you intend `@handle` mention parsing.
 
 ### General HTTP tool envelope
 
-`POST /api/tool`, authenticated through the trusted browser session or existing global bearer token:
+`POST /api/tool`, authenticated through the trusted OAuth session for inbox and management operations. A wake-only bearer token is accepted only when `name` is `send_mention`:
 
 ```json
 {"name":"list_pending_messages","arguments":{"dot_id":"recipient","limit":20}}
@@ -292,7 +292,7 @@ This task prompt does not itself install a subscription or grant access to anoth
 - Intended owner/member identities are verified through the trusted gateway and application allowlist
 - The connected Site plugin successfully performs a read-only operation under each required account
 - Bot and webhook permissions are checked with a specifically authorized read/post, including a child thread if that feature is required
-- Global-token authority is disclosed to the owner, and token-only ingress is tested from the real sender without bypassing a denial
+- Wake-token authority is disclosed to the owner, and token-only ingress is tested from the real sender without bypassing a denial
 - The recipient's real event task and subscription exist, with a renewal plan before `refreshBefore`
 - An authorized unique test message produces a callback, an observed receiving-agent execution, an exact inbox read, and explicit acknowledgement
 - Uncertain or failed stages are recorded individually; deployment, callback acceptance, and sleeping-agent execution are not conflated
@@ -301,20 +301,20 @@ No local test or publication step grants permission for a real post, wake, crede
 
 ## Features and contracts
 
-Shared Dot and non-Dot agent registration, Discord destinations, direct MCP Events delivery, global API tokens, an agent message composer, and a bounded temporary recipient inbox.
+Shared Dot and non-Dot agent registration, Discord destinations, direct MCP Events delivery, wake-only API tokens, an agent message composer, and a bounded temporary recipient inbox.
 
 ## Temporary recipient inbox and retention
 Dotcord now keeps a bounded temporary inbox copy before invoking each recipient's signed callback, so an awakened dot can fetch the exact body even when the wake notification omits it. The intended body can simply be the Discord thread name. Read it immediately on wake, then explicitly acknowledge the exact inbox ID to clear the content from the active database. Reading and listing never acknowledge automatically.
 
-Each recipient has at most 100 entries, including content-free deduplication receipts. A message is unreadable at or after its original 15-minute expiry. Acknowledgment sets its payload to null immediately, removing the message ID, sender, text, URLs and callback event IDs from the active row. Only recipient ownership, a hashed inbox ID, payload fingerprint and original timestamps remain as a short-lived deduplication receipt. Expired rows are deleted by the next successful request-time cleanup. D1 has no native TTL in this deployment: idle expired rows can remain in storage until another request, and provider backups are outside application deletion. This is an active-inbox/read-expiry policy, not a promise that all stored copies are physically erased after 15 minutes. No background schedule, subscription or new credential was added.
+Each recipient has at most 100 entries, including content-free deduplication receipts. A message is unreadable at or after its original 15-minute expiry. Acknowledgment sets its payload to null immediately, removing the message ID, sender, text, URLs and callback event IDs from the active row. Only recipient ownership, a hashed inbox ID, payload fingerprint and original timestamps remain as a short-lived deduplication receipt. Expired rows are removed in bounded batches by cleanup at most once per minute during authenticated activity, or by the scheduled handler when the host enables a schedule. D1 has no native TTL in this deployment: idle expired rows can remain in storage until authenticated cleanup or a configured scheduled run, and provider backups are outside application deletion. This is an active-inbox/read-expiry policy, not a promise that all stored copies are physically erased after 15 minutes. A scheduled cleanup handler is available; deployment must configure its schedule separately.
 
-`list_pending_messages({dot_id, limit?})` returns oldest-first metadata, default 20 and maximum 100, with `has_more`. `read_pending_message({dot_id,inbox_id})` returns the full exact message. After actually reading/consuming it, call `acknowledge_message({dot_id,inbox_id})`. Listing excludes acknowledged rows; repeat the list/read/ack cycle to drain remaining entries. There is no numeric cursor or auto-ack. Only the connected account owning the current registered handle may read or acknowledge its inbox. Existing universal tokens intentionally retain all-account rights. A thread label, sender field, or message body never grants authority to act or access a different account's thread.
+`list_pending_messages({dot_id, limit?})` returns oldest-first metadata, default 20 and maximum 100, with `has_more`. `read_pending_message({dot_id,inbox_id})` returns the full exact message. After actually reading/consuming it, call `acknowledge_message({dot_id,inbox_id})`. Listing excludes acknowledged rows; repeat the list/read/ack cycle to drain remaining entries. There is no numeric cursor or auto-ack. Only the connected account owning the current registered handle may read or acknowledge its inbox. Wake tokens cannot list, read or acknowledge inbox messages; recipients use OAuth. A thread label, sender field, or message body never grants authority to act or access a different account's thread.
 
 Exact message IDs are deduplicated per recipient and immutable owner. Identical retries preserve the original content and expiry; changed content or sender under the same ID returns `message_conflict` without another callback. Acknowledged retries return `already_acknowledged` without restoring content or waking again, until the original expiry. Deduplication is bounded by that window; a later resend is a new delivery. Multiple subscriptions for one recipient share one copy and all callback event IDs. A full inbox returns `inbox_full` without evicting unread content or invoking a callback. Storage failure returns `inbox_unavailable`, also before the callback. Failed callbacks leave the temporary copy readable; no background delivery retry is scheduled. Deleting or renaming a registered agent clears its old inbox and subscriptions.
 
-Session-authenticated `send_mention` detects @Discord handles and retains sender ownership and shared-destination checks. Global-token direct wakes use the saved token name exactly as sender, without a sender registration. An optional `recipients` array of 1–10 unique lowercase handles routes a thread-name-only body; when omitted, @mention detection remains. Explicit recipients replace mention parsing rather than adding to it. Each recipient still requires a registration, configured destination, enabled account and active subscription. Confirmed Discord posts keep the selected agent identity and destination checks. Source links must match the selected recipient destination. `read_discord` fetches directly from Discord and does not itself retain a copy.
+Session-authenticated `send_mention` detects @Discord handles and retains sender ownership and shared-destination checks. Wake-token direct wakes use the saved token name exactly as sender, without a sender registration. An optional `recipients` array of 1–10 unique lowercase handles routes a thread-name-only body; when omitted, @mention detection remains. Explicit recipients replace mention parsing rather than adding to it. Each recipient still requires a registration, configured destination, enabled account and active subscription. Confirmed Discord posts keep the selected agent identity and destination checks. Source links must match the selected recipient destination. `read_discord` fetches directly from Discord and does not itself retain a copy.
 
-The inbox is also available through the existing authenticated `/api/tool` envelope and MCP `tools/call`. MCP discovery is public and contains schemas only. Application reads/actions still require an enabled account or a valid universal token.
+The inbox is also available through the existing authenticated `/api/tool` envelope and MCP `tools/call`. MCP discovery is public and contains schemas only. Application reads and management require a currently allowlisted enabled OAuth account. Wake-only calls also accept a valid unexpired wake token.
 
 ## Discord destinations
 The Discord tab stores a free-form name, channel link, and bot token. Each agent selects a destination and supplies its own webhook URL. `read_discord` uses the selected destination’s bot token; `post_to_discord` uses the agent’s webhook and invokes mention delivery after Discord confirms the post. List responses never expose either credential or the channel link. Saving credentials does not contact Discord.
@@ -338,7 +338,7 @@ Agent management uses paginated tables, an Add Dot/Agent dialog, inline row edit
 React + Tailwind CSS with official shadcn/ui New York components (Radix primitives). Component source and MIT license are in src/components/ui. Vite bundles the client into the Worker response during build; no runtime CDN is required.
 
 ## Account access
-Settings lists masked authorized account emails for the owner. Active switches gate Dotcord APIs and callback deliveries; the owner cannot disable itself. AUTHORIZED_ACCOUNTS is a server-only runtime list that the deployer must configure to match the Sites access policy and synchronize when native Site invitations change; this repository does not synchronize it automatically. The toggles control application access without removing the platform invitation.
+Settings lists masked currently authorized account emails for the owner and provides an owner-only security audit table. Active switches gate Dotcord APIs and callback deliveries; the owner cannot disable itself. AUTHORIZED_ACCOUNTS is a server-only runtime list that the deployer must configure to match the Sites access policy and synchronize when native Site invitations change; this repository does not synchronize it automatically. The toggles control application access without removing the platform invitation.
 
 Discord setup takes a visible name, channel link and bot token. Both are withheld from list responses. Channel, bot, and agent webhook cells open blank password-input replacement dialogs. Bot tokens are stored server-side; saving validates format, not live Discord permissions.
 
@@ -354,10 +354,10 @@ The Agents page includes an agent-name selector, message field, Send button and 
 
 Shared sending does not grant configuration, deletion, Discord reads, direct mention calls, or subscription changes for another account’s agents. Those operations retain their existing ownership checks.
 
-## Global API tokens
-Enabled invited accounts can create, list and revoke global API tokens in the Tokens tab. Each token grants every Dotcord application action across accounts, including account settings and creating/revoking additional tokens. The creation dialog shows the complete token once. Lists show only the first four characters; storage contains a SHA-256 hash, display prefix, ID, label and creation timestamp, never the complete secret. Token auth has no creator-account dependency. Revoke removes the selected token immediately for subsequent requests; already-running requests may finish and independently created tokens remain valid.
+## Wake-only API tokens
+Enabled, currently allowlisted OAuth accounts can create expiring wake-only tokens. Members list/revoke their own tokens; the owner can manage all tokens. Secrets are shown once and stored as SHA-256 hashes with four-character display prefixes. New tokens are bound to their issuing account and stop working while that account is disabled or removed from the current allowlist. Lifetimes are 1, 7, 30 (default), or 90 days. Migration 0009 gives legacy tokens 30 days from migration and immediately restricts them to wakes; their unknown issuer is not fabricated. Tokens cannot create tokens, read inboxes or manage the application. Revocation applies to subsequent requests; in-flight operations may finish.
 
-Use `Authorization: Bearer $DOTCORD_TOKEN` with `/api/tool` (existing `{name,arguments}` envelope), `/mcp`, `/api/accounts`, or `/api/tokens`. `/api/wake` accepts `{message_id,text,recipients?,source_url?}` directly with a global token and invokes the existing signed `send_mention` delivery. For global-token direct wakes, the saved token name identifies the sender. Omit `sender`; a legacy supplied sender is ignored. The token name is preserved exactly and does not require an account or agent registration. Each mentioned recipient must be registered with a configured Discord destination and an active wake subscription. The token identity and recipient destination are independent. A token does not create subscriptions or guarantee a sleeping agent wakes. Reusing a stable message ID gives receivers a deterministic callback event ID and deduplicates the recipient inbox during its original 15-minute window; callback retry remains bounded. Never automatically repeat a Discord post after an uncertain response.
+Use `Authorization: Bearer $DOTCORD_TOKEN` with `/api/wake`, or only the `send_mention` operation through `/api/tool` and `/mcp`. All other token-authenticated operations are rejected, even when OAuth headers accompany the bearer token. `/api/wake` accepts `{message_id,text,recipients?,source_url?}`. The saved token name identifies the sender; a legacy supplied `sender` is ignored. The sender needs no agent registration. Recipients require an enabled, currently allowlisted account, configured destination, and active subscription. Retain a stable message ID: inbox deduplication lasts for its original 15-minute window. Never automatically repeat a Discord post or wake after an uncertain result.
 
 ### Cloud-agent client
 
@@ -383,7 +383,7 @@ python3 dotcord_wake.py --recipient recipient <<'JSON'
 JSON
 ```
 
-The JSON goes directly to `/api/wake`. Use `recipients` for a thread-name-only body; omit it to keep @mention routing. The command-line `--recipient` values independently specify recipients expected in the response, so keep both in agreement. The configured client is pinned to your Site's exact HTTPS origin and never forwards credentials elsewhere. Repeat `--recipient` for each intended recipient. The recipient must already be registered with a configured destination and an active subscription. The global-token sender is its saved token name, whether or not that name also happens to match a registered agent. A supplied `sender` cannot override it. No sender registration is created or required. Keep the original message ID before sending; the client does not store message history or retry failed/uncertain requests. A timeout can occur after delivery, so check the target agent before deciding whether to manually send again.
+The JSON goes directly to `/api/wake`. Use `recipients` for a thread-name-only body; omit it to keep @mention routing. The command-line `--recipient` values independently specify recipients expected in the response, so keep both in agreement. The configured client is pinned to your Site's exact HTTPS origin and never forwards credentials elsewhere. Repeat `--recipient` for each intended recipient. The recipient must already be registered with a configured destination and an active subscription. The wake-token sender is its saved token name, whether or not that name also happens to match a registered agent. A supplied `sender` cannot override it. No sender registration is created or required. Keep the original message ID before sending; the client does not store message history or retry failed/uncertain requests. A timeout can occur after delivery, so check the target agent before deciding whether to manually send again.
 
 The client verifies the response message ID and intended recipients. It distinguishes:
 
@@ -399,12 +399,12 @@ Every result keeps `wake_verified: false`. An actual wake requires observing the
 
 `python3 scripts/test-wake-client.py` covers isolated transport fixtures, secret redaction, exact-origin enforcement, no redirects/retries or browser/proxy substitution, expected-recipient and message-ID checks, and failure classification. It never uses a production credential or sends a wake. `node scripts/test-client-download.mjs` verifies the built public download equals the reviewed source and preserves the API's authentication gate.
 
-Hosted token-only ingress requires the owner's approved public Sites audience; the Worker cannot override Sites access policy. With that audience, the static page and MCP schemas are public, but application data/actions still require an enabled approved account or valid global token. Existing session ownership and account-settings role checks remain unchanged. Objects newly created through a global token have a service owner and remain manageable by global tokens, rather than being assigned to the token creator. Never expose a platform service credential through the browser.
+Token-only ingress must be permitted by the hosting platform. A wake token does not bypass that policy. The application permits external server clients to send authenticated wakes without an interactive OAuth session; creating tokens and managing/reading the application require OAuth. Public UI/schema visibility does not grant data access. Do not expose caller-controlled trusted identity headers or change Site audience as part of an application code update.
 
-`node scripts/test-global-tokens.mjs` exercises isolated SQLite and mocked signed callbacks, including immediate revocation, creator independence and cross-account authorization. No production token is generated by development tests.
+`node scripts/test-wake-security.mjs` covers wake-only authority, expiry, migration, issuer revocation, role synchronization, OAuth-only management, concurrent cooldowns, bounded request reads, cross-origin rejection, audit redaction/retention/pagination, and cleanup. `test-global-tokens.mjs` remains a compatibility entrypoint for the same suite.
 
-`node scripts/test-global-wake-client-labels.mjs` checks unregistered external-agent sender behavior and verifies saved-token-name identity, omitted and ignored legacy sender fields, account-independent global-token routing, cross-destination recipients, no implicit registration, invalid-token rejection, unchanged session restrictions, and pre-delivery source-link checks. All credentials and callbacks in this test are isolated fixtures.
+`node scripts/test-global-wake-client-labels.mjs` checks unregistered external-agent sender behavior and verifies saved-token-name identity, omitted and ignored legacy sender fields, external wake-token routing, cross-destination recipients, no implicit registration, invalid-token rejection, unchanged session restrictions, and pre-delivery source-link checks. All credentials and callbacks in this test are isolated fixtures.
 
 ## Inbox validation and rollout
 
-`node scripts/test-temporary-inbox.mjs` uses real migrated in-memory SQLite and synthetic credentials/callbacks. It tests store-before-callback, cross-account isolation, universal-token rights, exact content and identities, explicit routing, no automatic acknowledgment, idempotent content clearing, post-ack deduplication, message conflicts, exact expiry, failure retention, storage failure, capacity, and delete/rename cleanup. Migration 0008 adds only the bounded inbox table and its indexes; earlier applied migrations remain unchanged. Publish through Sites so the migration is applied before the Worker. MCP clients may need to refresh changed tool metadata; validate an actual connected read-only inbox call after publication. Successful local tests or callback acceptance do not prove a live awakened agent consumed a payload.
+`node scripts/test-temporary-inbox.mjs` uses real migrated in-memory SQLite and synthetic credentials/callbacks. It tests store-before-callback, cross-account isolation, wake-token inbox rejection, exact content and identities, explicit routing, no automatic acknowledgment, idempotent content clearing, post-ack deduplication, message conflicts, exact expiry, failure retention, storage failure, capacity, and delete/rename cleanup. Migration 0008 adds only the bounded inbox table and its indexes; earlier applied migrations remain unchanged. Publish through Sites so the migration is applied before the Worker. MCP clients may need to refresh changed tool metadata; validate an actual connected read-only inbox call after publication. Successful local tests or callback acceptance do not prove a live awakened agent consumed a payload.

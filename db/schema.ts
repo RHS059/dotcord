@@ -5,7 +5,7 @@ export const discords = sqliteTable('discords',{id:text('id').primaryKey(),owner
 
 export const accounts = sqliteTable('accounts',{email:text('email').primaryKey(),userId:text('user_id'),role:text('role').notNull(),enabled:integer('enabled').notNull().default(1)});
 
-export const apiTokens = sqliteTable('api_tokens',{id:text('id').primaryKey(),name:text('name').notNull(),prefix:text('prefix').notNull(),tokenHash:text('token_hash').notNull().unique(),created:text('created').notNull()});
+export const apiTokens = sqliteTable('api_tokens',{id:text('id').primaryKey(),name:text('name').notNull(),prefix:text('prefix').notNull(),tokenHash:text('token_hash').notNull().unique(),created:text('created').notNull(),owner:text('owner'),expires:text('expires')});
 
 // Pending content is readable for 15 minutes. Acknowledgment clears payload; the
 // remaining hash-only receipt prevents duplicate reappearance until expiry.
@@ -14,3 +14,9 @@ export const temporaryInbox = sqliteTable('temporary_inbox',{
  payload:text('payload'),fingerprint:text('fingerprint').notNull(),
  created:text('created').notNull(),expires:text('expires').notNull()
 },table=>[index('temporary_inbox_recipient').on(table.owner,table.dot,table.created),index('temporary_inbox_expiry').on(table.expires)]);
+
+export const wakeLimits = sqliteTable('wake_limits',{dot:text('dot').primaryKey(),nextAllowed:integer('next_allowed').notNull()});
+export const securityMaintenance = sqliteTable('security_maintenance',{id:text('id').primaryKey(),nextRun:integer('next_run').notNull()});
+export const securityAudit = sqliteTable('security_audit',{
+ id:text('id').primaryKey(),created:text('created').notNull(),actor:text('actor').notNull(),action:text('action').notNull(),outcome:text('outcome').notNull(),resource:text('resource').notNull(),count:integer('count').notNull().default(1)
+},table=>[index('security_audit_created').on(table.created,table.id)]);

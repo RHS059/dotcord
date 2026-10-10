@@ -8,6 +8,9 @@ for(const file of readdirSync(new URL('../drizzle',import.meta.url)).filter(f=>f
 const DB={async batch(statements){sql.exec('BEGIN');try{const results=[];for(const statement of statements)results.push(await statement.run());sql.exec('COMMIT');return results;}catch(e){sql.exec('ROLLBACK');throw e;}},prepare(query){return {bind(...args){return {first:async()=>sql.prepare(query).get(...args)||null,all:async()=>({results:sql.prepare(query).all(...args)}),run:async()=>sql.prepare(query).run(...args)}}}}};
 const env={DB,AUTHORIZED_ACCOUNTS:JSON.stringify([{email:'owner@example.test',role:'owner'}])};
 async function tool(name,args={}){
+ // Independent cases; rate limiting has its own concurrency and boundary tests.
+ sql.exec('DELETE FROM wake_limits');
+
   const response=await worker.fetch(new Request('https://relay.test/api/tool',{method:'POST',headers:{origin:'https://relay.test','content-type':'application/json','oai-authenticated-user-id':'owner','oai-authenticated-user-email':'owner@example.test'},body:JSON.stringify({name,arguments:args})}),env);
   return {status:response.status,...await response.json()};
 }
@@ -73,8 +76,8 @@ try{
   assert.match((await tool('register_dot',{dot_id:'sender',discord_id:first.id,agent_type:'agent'})).error,/other category/);
   assert.equal(sql.prepare('SELECT discord_id FROM dots WHERE id=?').get('sender').discord_id,second.id);
   assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM subscriptions').get().n,1);
-  assert.deepEqual(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r=>r.name),['accounts','api_tokens','discords','dots','subscriptions','temporary_inbox']);
-  for(const table of ['accounts','api_tokens','discords','dots','subscriptions','temporary_inbox']){
+  assert.deepEqual(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r=>r.name),['accounts','api_tokens','discords','dots','security_audit','security_maintenance','subscriptions','temporary_inbox','wake_limits']);
+  for(const table of ['accounts','api_tokens','discords','dots','security_audit','security_maintenance','subscriptions','temporary_inbox','wake_limits']){
     const data=JSON.stringify(sql.prepare('SELECT * FROM '+table).all());
     for(const ephemeral of ['uncertain body','timed out','not in your channel','wrong source'])assert.ok(!data.includes(ephemeral));
   }

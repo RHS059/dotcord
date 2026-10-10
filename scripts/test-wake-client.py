@@ -25,6 +25,20 @@ class WakeClientTests(unittest.TestCase):
         return client.summarize(status, HEADERS, json.dumps(data).encode(), 0,
                                 expected=("receiver",), message_id="fixture-message", **options)
 
+    def test_rate_limit_and_partial_delivery(self):
+        payload = {"message_id": "fixture-message", "results": [{"handle": "receiver", "status": "rate_limited", "retry_after_seconds": 15}]}
+        summary, code = client.summarize(429, {**HEADERS, "retry-after": "15"}, json.dumps(payload).encode(), 0, message_id="fixture-message")
+        self.assertEqual(code, 4)
+        self.assertEqual(summary["outcome"], "rate_limited")
+        self.assertEqual(summary["retry_after_seconds"], 15)
+        summary, code = self.result(results=[{"handle": "receiver", "status": "rate_limited", "retry_after_seconds": 8}, {"handle": "second", "status": "accepted"}])
+        self.assertEqual(code, 4)
+        self.assertEqual(summary["results"][0]["retry_after_seconds"], 8)
+
+    def test_utf8_byte_limit(self):
+        with self.assertRaises(client.ClientError):
+            client.validate_payload({**PAYLOAD, "text": "界" * 7999})
+
     def test_exact_origin(self):
         self.assertEqual(client.endpoint(client.DEFAULT_ORIGIN), client.DEFAULT_ORIGIN + "/api/wake")
         for origin in ("http://relay.test", "https://evil.test", client.DEFAULT_ORIGIN + "/api", client.DEFAULT_ORIGIN + "?x=y", "https://user:secret@relay.test", "https://relay.test:444", "https://relay.test\n"):

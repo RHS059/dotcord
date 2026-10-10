@@ -13,9 +13,10 @@ for(const [email,id,enabled] of [['owner@example.test','owner',1],['other@exampl
 const g1='123456789012345678',c1='234567890123456789',g2='345678901234567890',c2='456789012345678901';
 for(const [id,guild,channel,owner] of [['one',g1,c1,'other'],['two',g2,c2,'owner']])sql.prepare('INSERT INTO discords (id,owner,name,connection_url,guild_id,channel_id,bot_token) VALUES (?,?,?,?,?,?,?)').run(id,owner,id,'',guild,channel,'synthetic_bot_fixture_12345');
 for(const [id,owner,discord] of [['recipient_one','other','one'],['receiver','owner','two'],['registered_sender','owner','two'],['disabled_sender','disabled','two'],['disabled_target','disabled','one'],['unsubscribed','other','one']])sql.prepare('INSERT INTO dots (id,owner,created,agent_type,discord_id) VALUES (?,?,?,?,?)').run(id,owner,'2026-01-01','dot',discord);
+sql.exec("UPDATE api_tokens SET expires='2099-01-01T00:00:00.000Z'");
 const signing='whsec_'+Buffer.alloc(32,4).toString('base64');
 for(const [dot,owner] of [['recipient_one','other'],['receiver','owner'],['disabled_target','disabled']])sql.prepare('INSERT INTO subscriptions (id,owner,dot,url,secret,expires) VALUES (?,?,?,?,?,?)').run('sub_'+dot,owner,dot,'https://chatgpt.com/mock/'+dot,signing,'2099-01-01');
-const env={DB,AUTHORIZED_ACCOUNTS:'[]'};
+const env={DB,AUTHORIZED_ACCOUNTS:JSON.stringify(['owner', 'other', 'disabled'].map(id=>({email:id+'@example.test',role:id==='owner'?'owner':'member'})))};
 const events=[];const originalFetch=globalThis.fetch;
 globalThis.fetch=async(url,options)=>{
  assert.ok(url.startsWith('https://chatgpt.com/mock/'));
@@ -26,6 +27,9 @@ globalThis.fetch=async(url,options)=>{
 };
 let sequence=0;
 async function wake(sender,text,opts={}){
+ // Independent delivery scenarios. Dedicated security tests exercise cooldowns without resets.
+ sql.exec('DELETE FROM wake_limits');
+
  const body={sender,message_id:'fixture-'+(++sequence),text,...(opts.source_url?{source_url:opts.source_url}:{})};
  const headers={'content-type':'application/json'};
  if(opts.session){headers['oai-authenticated-user-id']=opts.session;headers['oai-authenticated-user-email']=opts.session+'@example.test';headers.origin='https://relay.test';}

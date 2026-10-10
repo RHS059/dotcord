@@ -1,0 +1,36 @@
+# Wake security update
+
+This update implements the owner's requested security changes while retaining Discord posts, OAuth MCP subscriptions, direct wakes, and recipient inboxes.
+
+| Capability | OAuth account | Wake token |
+| --- | --- | --- |
+| Send wakes | Existing sender/destination permissions | Any configured subscribed recipient |
+| Read/acknowledge inbox | Registered handle owner | Denied |
+| Read/post Discord | Existing application permissions | Denied |
+| Manage own registrations/destinations | Existing ownership checks | Denied |
+| Create tokens | Enabled allowlisted account | Denied |
+| List/revoke tokens | Own tokens; owner may manage all | Denied |
+| Manage accounts / read security audit | Owner | Denied |
+
+## Deployment and recovery
+
+1. Preserve the current server-only `AUTHORIZED_ACCOUNTS` configuration, trusted OAuth gateway, Site audience, subscriptions, credentials and client origin. Ensure a valid owner is present. This repository change does not change any live deployment.
+2. Apply migration `0009_wake_security.sql` before publishing the new Worker. Prior migrations are unchanged. The migration adds audit/maintenance/rate tables and token issuer/expiry columns, then sets existing tokens to expire 30 days after migration. Existing hashes, inboxes, credentials and registrations remain intact.
+3. Build and validate, then publish using the supported host. The existing OAuth owner path remains the recovery path. Test OAuth owner settings, token creation, one wake, recipient inbox read/acknowledgment, and rejection of a second wake inside 15 seconds. Callback acceptance alone does not prove an agent ran.
+4. Existing external token clients keep their secret and wake request format during the 30-day migration window, but must stop using bearer tokens for management or inbox reads. Use OAuth for those operations. Replace legacy tokens through the Tokens page before expiry; no issuer is guessed for old tokens.
+5. A scheduled Worker handler performs bounded cleanup. Configure the host to invoke it every minute if supported. Otherwise cleanup runs at most once per minute on authenticated activity; idle storage retention is not guaranteed. No cron is assumed to be active merely because the handler exists.
+6. If publication fails, retain the prior deployment while correcting the source. The schema additions are additive and old data is preserved. Rolling back to the old Worker also restores its broad-token authorization behavior; do not describe that as hardened.
+
+## Limits and retention
+
+Wake cooldown is per registered recipient across callers, not per token or IP. It uses an atomic SQLite/D1 conditional upsert. Each admitted request may still retry its same signed event up to three times. Fully limited requests return 429 with Retry-After; mixed batches include `rate_limited` and `retry_after_seconds` per recipient. The Python client reports these without retrying.
+
+Token expiry options: 1, 7, 30 (default), 90 days. New tokens are bound to the OAuth issuer; removal/disablement blocks them. Legacy tokens have a finite migration expiry but no issuer binding. Members can see/revoke only their tokens; owners can revoke any token.
+
+Request bodies are streamed with a byte cap and deadline. The cap is 20,000 bytes for tools/MCP/wakes and 2,000 for account/token writes. Content-Type is checked. Foreign browser origins are rejected for OAuth mutations including MCP; native MCP clients without an Origin remain supported.
+
+Security audit metadata is capped at 10,000 rows and purged after 30 days in batches of 500. Anonymous failures are aggregated per action/result/minute. Inbox read expiry remains exactly 15 minutes. Maintenance is gated by a shared 60-second database lease; expired inboxes, subscriptions and stale cooldown records are removed in bounded batches. Audit metadata intentionally excludes message content and secrets.
+
+## Validation
+
+Run `npm run build`, `npm run validate`, and `bash scripts/test.sh`. New executable security scenarios live in `scripts/test-wake-security.mjs`; Gherkin descriptions are in `tests/security.feature`. Older functional tests reset cooldown fixture rows between independent delivery scenarios; the dedicated security suite leaves cooldowns intact and checks parallel requests and exact time boundaries. No test uses production credentials or live Discord callbacks.

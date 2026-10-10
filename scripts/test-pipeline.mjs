@@ -33,6 +33,9 @@ const env = {DB, AUTHORIZED_ACCOUNTS: JSON.stringify([
 ])};
 const emails = {owner: 'owner@example.test', member: 'member@example.test', outsider: 'outsider@example.test'};
 async function rpc(owner, method, params = {}) {
+ // Independent functional case; cooldown behavior is covered by test-wake-security.mjs.
+ sql.exec('DELETE FROM wake_limits');
+
   const headers = {'content-type': 'application/json'};
   if (owner) Object.assign(headers, {'oai-authenticated-user-id': owner, 'oai-authenticated-user-email': emails[owner]});
   const response = await worker.fetch(new Request('https://relay.test/mcp', {
@@ -217,7 +220,7 @@ try {
   assert.deepEqual(deliveryOnly(gone.mention_delivery.results), [{handle: 'receiver', status: 'gone', attempts: 1}]);
   assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM subscriptions').get().n, 0);
 
-  assert.deepEqual(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(x => x.name), ['accounts', 'api_tokens', 'discords', 'dots', 'subscriptions', 'temporary_inbox']);
+  assert.deepEqual(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(x => x.name), ['accounts', 'api_tokens', 'discords', 'dots', 'security_audit', 'security_maintenance', 'subscriptions', 'temporary_inbox', 'wake_limits']);
   for (const table of ['accounts', 'api_tokens', 'discords', 'dots', 'subscriptions']) {
     assert.ok(!JSON.stringify(sql.prepare('SELECT * FROM ' + table).all()).includes(content), 'No posted content persisted');
   }

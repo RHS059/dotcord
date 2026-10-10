@@ -65,8 +65,8 @@ def validate_payload(value: object) -> dict:
                 or len(set(recipients)) != len(recipients)):
             raise ClientError("recipients must contain 1–10 unique lowercase handles.")
     serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    if utf16_length(serialized) > 20000:
-        raise ClientError("The serialized request exceeds Dotcord's 20,000-character limit.")
+    if len(serialized.encode("utf-8")) > 20000:
+        raise ClientError("The serialized request exceeds Dotcord's 20,000-byte limit.")
     return value
 
 
@@ -145,6 +145,12 @@ def summarize(status: int, headers: dict, body: bytes, curl_code: int, probe: bo
             return summary, 0
         summary.update(outcome="authentication_rejected", detail="Dotcord rejected authentication. Check the token privately; do not paste it into chat or logs.")
         return summary, 2
+    if status == 429 and data.get("message_id") == message_id and isinstance(data.get("results"), list):
+        retry = headers.get("retry-after", "")
+        if re.fullmatch(r"[0-9]{1,2}", retry) and 1 <= int(retry) <= 15:
+            summary["retry_after_seconds"] = int(retry)
+        summary.update(outcome="rate_limited", detail="The recipient wake limit was reached. No automatic retry was made.")
+        return summary, 4
     if status < 200 or status >= 300 or "error" in data:
         summary.update(outcome="application_rejected", detail="Dotcord rejected the request. Check registration, payload, account access, and the selected destination.")
         return summary, 2
@@ -159,7 +165,7 @@ def summarize(status: int, headers: dict, body: bytes, curl_code: int, probe: bo
         summary.update(outcome="unexpected_application_response", detail="The JSON response did not contain a valid wake result list.")
         return summary, 3
     # Only expected result fields are returned; never echo arbitrary response data.
-    allowed_statuses = {"accepted", "unregistered", "different_discord", "not_subscribed", "inactive", "gone", "oversized", "transient", "rejected", "inbox_full", "inbox_unavailable", "message_conflict", "already_acknowledged"}
+    allowed_statuses = {"accepted", "unregistered", "different_discord", "not_subscribed", "inactive", "gone", "oversized", "transient", "rejected", "inbox_full", "inbox_unavailable", "message_conflict", "already_acknowledged", "rate_limited"}
     safe_results = []
     for item in results:
         handle, delivery = item.get("handle"), item.get("status")
@@ -169,6 +175,9 @@ def summarize(status: int, headers: dict, body: bytes, curl_code: int, probe: bo
         result = {"handle": handle, "status": delivery}
         if isinstance(item.get("attempts"), int) and 0 <= item["attempts"] <= 3:
             result["attempts"] = item["attempts"]
+        retry = item.get("retry_after_seconds")
+        if delivery == "rate_limited" and isinstance(retry, int) and 1 <= retry <= 15:
+            result["retry_after_seconds"] = retry
         safe_results.append(result)
     accepted = sum(item["status"] == "accepted" for item in safe_results)
     summary.update(results=safe_results, accepted_callbacks=accepted)
@@ -205,7 +214,7 @@ def main() -> int:
             else:
                 token = os.environ.get("DOTCORD_TOKEN", "")
             if not TOKEN_RE.fullmatch(token):
-                raise ClientError("Set DOTCORD_TOKEN privately to an existing global API token; no token was sent.")
+                raise ClientError("Set DOTCORD_TOKEN privately to an existing wake token; no token was sent.")
             try:
                 raw = sys.stdin.buffer.read(80001)
                 if len(raw) > 80000:

@@ -64,6 +64,13 @@
       "when": 1791645382145,
       "tag": "0008_temporary_inbox",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1791649512804,
+      "tag": "0009_wake_security",
+      "breakpoints": true
     }
   ]
 }

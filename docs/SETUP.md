@@ -25,7 +25,7 @@ The build type-checks the React sources, runs Vite, embeds the single-file UI an
 
 Build outputs are ignored. The public `.openai/hosting.example.json` supplies `d1: "DB"`, `r2: null`, and MCP capability. It intentionally has no project ID. When a private `.openai/hosting.json` exists, the build uses it instead. A template build is useful for local verification but is **not registered or deployed**.
 
-`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs all JavaScript regression files and the Python suite. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0008` in order. They do not contact Discord, a production database, or a live callback receiver.
+`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs all JavaScript regression files and the Python suite. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0009` in order. They do not contact Discord, a production database, or a live callback receiver.
 
 ## 2. Provision a new Sites deployment
 
@@ -61,7 +61,7 @@ Do not commit these per-deployment changes back to the public template. The orig
 
 `.env.example` documents names and synthetic values only; the Worker does not automatically load it. Use the hosting provider's private runtime configuration interface.
 
-- `AUTHORIZED_ACCOUNTS`: JSON array of permitted emails and `owner`/`member` roles. Configure your own owner and invited members. The first verified visit binds the platform's stable identity to that email. No account rows or user IDs are included in this repository. Keep the list in sync with native Site invitations yourself; it is not automatically synchronized.
+- `AUTHORIZED_ACCOUNTS`: JSON array of permitted emails and `owner`/`member` roles. Configure your own owner and invited members. The first verified visit binds the platform's stable identity to that email. No account rows or user IDs are included in this repository. The current list is enforced on every OAuth request, token-issuer check and callback delivery; removals and role changes take effect on subsequent requests. Native Site invitations remain a separate gate.
 - `MCP_CALLBACK_ORIGINS`: optional comma-separated exact HTTPS origins for independently verified receivers. `https://chatgpt.com` is already allowed. Do not add a URL supplied by an untrusted message or loosen this to arbitrary hosts.
 - `DB`: a platform D1 binding, **not** a string variable.
 
@@ -73,7 +73,7 @@ Do not copy authentication values into `.openai/hosting.json`, `.env.example`, f
 
 Run the build and complete test sequence again after configuration. Publish the source and generated Worker artifact through the current Sites publishing workflow. That workflow must apply the included migrations to the new D1 database **before** the Worker goes live. Preserve all SQL files, snapshots, and the journal; do not flatten the schema, remove old migrations, or regenerate an already applied migration.
 
-The final database contains `accounts`, `api_tokens`, `discords`, `dots`, `subscriptions`, and `temporary_inbox`. Early migrations create two historical tables that migration `0002` removes; an empty database needs the full chain. No production records or seed credentials are part of any migration.
+The database contains `accounts`, `api_tokens`, `discords`, `dots`, `subscriptions`, `temporary_inbox`, `wake_limits`, `security_audit`, and `security_maintenance`. Early migrations create two historical tables that migration `0002` removes; an empty database needs the full chain. No production records or seed credentials are part of any migration.
 
 Verify the deployment reaches a successful terminal state and record its returned URL. Publication alone does not verify a plugin connection, a Discord permission, or a task subscription.
 
@@ -86,7 +86,7 @@ Verify the deployment reaches a successful terminal state and record its returne
 3. Add a Dot or non-Dot agent with its lowercase handle, destination, and existing Discord webhook URL. Configure every recipient separately. Saving credentials does not contact Discord.
 4. Have each intended account install/connect the Site's provisioned MCP integration through the platform's supported UI. Confirm a read-only `list_dots` or `list_discords` tool call. A schema appearing in discovery is not proof of authenticated access.
 5. Establish a compatible `dot.mentioned` event subscription for each receiving handle through that account's task/event system. Registration alone does not create one. The receiver must complete the signed verification challenge and handle signed deliveries. `list_dots` reports subscription readiness. Subscription renewal/scheduling is the external platform's responsibility.
-6. If token-based access is needed, create an explicitly authorized global token in the Tokens tab and keep the once-shown value privately. **Every token grants complete, all-account application access**, including additional token creation. It is not a per-agent credential.
+6. If token-based access is needed, create a wake-only token in the Tokens tab after OAuth sign-in. Choose 1, 7, 30 (default), or 90 days and keep the once-shown value privately. **Tokens can only send wakes**, including to other registered recipients. They cannot read inboxes, post to Discord, modify configuration, or create/revoke tokens.
 
 Token-only callers must also pass the host's access layer. A private Sites audience may reject them before the Worker sees the request. A Dotcord bearer token does not bypass host policy. If an owner explicitly authorizes a public audience, static UI and MCP schemas become public, while application data/actions retain their account/token checks. Do not change audience or work around a denial merely to make a probe pass.
 
@@ -100,7 +100,7 @@ python3 clients/dotcord_wake.py --probe
 
 The expected result is `ingress_reachable`: the application's unauthenticated JSON 401 was reached. This sends no token and no wake. If an edge/access layer denies access, stop and resolve that through the provider's authorized setup path. Do not change proxy routes, browser identity, or transports to bypass it.
 
-With an existing global token privately supplied as `DOTCORD_TOKEN`, send only an authorized test message to an agreed recipient:
+With an existing wake token privately supplied as `DOTCORD_TOKEN`, send only an authorized test message to an agreed recipient:
 
 ```sh
 python3 clients/dotcord_wake.py --recipient recipient <<'JSON'
