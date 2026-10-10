@@ -25,7 +25,7 @@ The build type-checks the React sources, runs Vite, embeds the single-file UI an
 
 Build outputs are ignored. The public `.openai/hosting.example.json` supplies `d1: "DB"`, `r2: null`, and MCP capability. It intentionally has no project ID. When a private `.openai/hosting.json` exists, the build uses it instead. A template build is useful for local verification but is **not registered or deployed**.
 
-`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs all JavaScript regression files and the Python suite. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0014` in order. They do not contact Discord, a production database, or a live callback receiver.
+`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs all JavaScript regression files and the Python suite. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0015` in order. They do not contact Discord, a production database, or a live callback receiver.
 
 ## 2. Provision a new Sites deployment
 
@@ -86,7 +86,7 @@ For an existing host-created account, sign in with that host account before choo
 
 ## 4. Migrate, build, and publish
 
-Run the build and complete test sequence again after configuration. Publish the source and generated Worker artifact through the current Sites publishing workflow. That workflow must apply the included migrations to the D1 database **before** the Worker goes live. This release requires migration `0014_receiver_credentials.sql` after `0013_account_wake_identity.sql`, `0012_google_oauth_settings.sql`, `0011_google_signin_handle_choice.sql`, `0010_shared_app_onboarding.sql` and `0009_wake_security.sql`; an existing deployment must apply every missing migration in order. Existing Google users must sign in again after migration `0012`, which adds configuration-bound sessions. Preserve all SQL files, snapshots, and the journal; do not flatten the schema, remove old migrations, or regenerate an already applied migration.
+Run the build and complete test sequence again after configuration. Publish the source and generated Worker artifact through the current Sites publishing workflow. That workflow must apply the included migrations to the D1 database **before** the Worker goes live. This release requires migration `0015_test_wake_receipts.sql` after `0014_receiver_credentials.sql`, `0013_account_wake_identity.sql`, `0012_google_oauth_settings.sql`, `0011_google_signin_handle_choice.sql`, `0010_shared_app_onboarding.sql` and `0009_wake_security.sql`; an existing deployment must apply every missing migration in order. Existing Google users must sign in again after migration `0012`, which adds configuration-bound sessions. Preserve all SQL files, snapshots, and the journal; do not flatten the schema, remove old migrations, or regenerate an already applied migration.
 
 The database contains `accounts`, `api_tokens`, `discords`, `dots`, `subscriptions`, `temporary_inbox`, `wake_limits`, `security_audit`, `security_maintenance`, `invitations`, `account_identities`, `account_onboarding`, `auth_sessions`, `oauth_states`, and `google_oauth_settings`. Early migrations create two historical tables that migration `0002` removes; an empty database needs the full chain. No production records or seed credentials are part of any migration.
 

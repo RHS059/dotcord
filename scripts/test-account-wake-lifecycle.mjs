@@ -53,12 +53,14 @@ try{
  status=await tool('get_wake_status');assert.equal(status.dot_id,'renamed_handle');assert.equal(status.state,'ready');assert.equal(sql.prepare('SELECT expires FROM subscriptions WHERE id=?').get(subId).expires,expires);
  resetRate();sent=await tool('post_to_discord',{dot_id:'sender_handle',text:'@renamed_handle after rename'},'sender');assert.equal(sent.mention_delivery.results[0].status,'accepted');
  // Removing handle makes account delivery dormant, then own recreation recovers it.
- await tool('delete_agent',{dot_id:'renamed_handle'});assert.ok(sql.prepare('SELECT id FROM subscriptions WHERE id=?').get(subId));
+ assert.equal((await request('/api/tool',{name:'delete_agent',arguments:{dot_id:'renamed_handle'}})).status,403,'Scoped-token deletion requires admin');
+ await tool('delete_agent',{dot_id:'renamed_handle'},'admin');assert.ok(sql.prepare('SELECT id FROM subscriptions WHERE id=?').get(subId));
  assert.equal((await tool('get_wake_status')).state,'profile_required');assert.equal((await request('/api/account')).data.needs_setup,true);
  const recreated=await request('/api/onboarding',{action:'accept',dot_id:'renamed_handle',discord_id:destination.id});assert.equal(recreated.status,201,JSON.stringify(recreated));
  assert.equal((await tool('get_wake_status')).state,'ready');assert.equal(sql.prepare('SELECT expires FROM subscriptions WHERE id=?').get(subId).expires,expires);
  // The same spelling reclaimed by another account does not inherit callback authority.
- await tool('delete_agent',{dot_id:'renamed_handle'});
+ assert.equal((await request('/api/tool',{name:'delete_agent',arguments:{dot_id:'renamed_handle'}})).status,403,'Scoped-token deletion requires admin');
+ await tool('delete_agent',{dot_id:'renamed_handle'},'admin');
  await tool('register_dot',{dot_id:'renamed_handle',discord_id:destination.id},'other');resetRate();const before=events.length;
  sent=await tool('post_to_discord',{dot_id:'sender_handle',text:'@renamed_handle belongs to another account'},'sender');assert.equal(sent.mention_delivery.results[0].status,'not_subscribed');assert.equal(events.length,before);
  assert.equal((await tool('get_wake_status',{},'other')).account_subscriptions,0);

@@ -48,3 +48,9 @@ export const googleOauthSettings = sqliteTable('google_oauth_settings',{
 
 // Account-scoped receiver credentials are hash-only and cannot send or read messages.
 export const receiverCredentials = sqliteTable('receiver_credentials',{id:text('id').primaryKey(),owner:text('owner').notNull(),name:text('name').notNull(),secretHash:text('secret_hash').notNull().unique(),created:text('created').notNull(),expires:text('expires').notNull()});
+
+// Bounded, content-free receipts: request retries never start another test delivery.
+export const wakeTests = sqliteTable('wake_tests',{
+ id:text('id').primaryKey(),owner:text('owner').notNull(),dot:text('dot').notNull(),
+ recipientOwner:text('recipient_owner').notNull(),created:integer('created').notNull(),result:text('result')
+},table=>[index('wake_tests_created').on(table.created),index('wake_tests_owner').on(table.owner)]);
