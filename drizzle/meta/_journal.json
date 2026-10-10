@@ -1,0 +1,69 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1791450875222,
+      "tag": "0000_fluffy_franklin_storm",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1791451860529,
+      "tag": "0001_keen_namor",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1791452195678,
+      "tag": "0002_legal_luminals",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1791452450719,
+      "tag": "0003_white_sinister_six",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1791453631423,
+      "tag": "0004_workable_mephisto",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1791455353515,
+      "tag": "0005_pretty_shard",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1791456606879,
+      "tag": "0006_sour_boomer",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1791641124347,
+      "tag": "0007_complex_impossible_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1791645382145,
+      "tag": "0008_temporary_inbox",
+      "breakpoints": true
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+ALTER TABLE `dots` ADD `webhook_url` text;

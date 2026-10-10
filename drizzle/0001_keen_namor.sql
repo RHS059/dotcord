@@ -1,0 +1,1 @@
+ALTER TABLE `dots` ADD `agent_type` text DEFAULT 'dot' NOT NULL;

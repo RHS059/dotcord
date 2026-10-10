@@ -1,0 +1,1 @@
+ALTER TABLE `discords` ADD `bot_token` text;

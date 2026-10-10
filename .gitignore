@@ -1,0 +1,23 @@
+dist/
+site.tar.gz
+
+client-build/
+
+node_modules/
+
+__pycache__/
+
+# Never publish per-deployment identity, environment values, runtime state or credentials.
+.openai/hosting.json
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+.wrangler/
+*.sqlite
+*.sqlite3
+*.db
+*.log
+*.pem
+*.key
