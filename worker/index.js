@@ -373,8 +373,8 @@ async function accountSettings(request,env,account,actor){
   await securityAudit(env,actor,'account_update','success',a.account_id);
  }else if(request.method!=='GET')return json({error:'Method not allowed'},405);
  const allowed=new Set(configuredAccounts(env).map(a=>a.email));
- const rows=(await stmt(env.DB,'SELECT email,role,enabled FROM accounts ORDER BY role DESC,email').all()).results.filter(a=>allowed.has(a.email));
- return json({accounts:await Promise.all(rows.map(async a=>({id:await hash(a.email),email:a.email,role:a.role,enabled:a.enabled})))});
+ const rows=(await stmt(env.DB,'SELECT email,role,enabled,user_id FROM accounts ORDER BY role DESC,email').all()).results.filter(a=>allowed.has(a.email));
+ return json({accounts:await Promise.all(rows.map(async a=>({id:await hash(a.email),email:a.email,role:a.role,enabled:a.enabled,receiver_eligible:!!a.enabled&&!!a.user_id})))});
 }
 
 async function receiverManagement(request,env,account,actor){
@@ -388,15 +388,28 @@ async function receiverManagement(request,env,account,actor){
   await env.DB.batch([stmt(env.DB,'DELETE FROM receiver_credentials WHERE id=? AND owner=?',id,account.user_id),stmt(env.DB,'DELETE FROM subscriptions WHERE receiver_id=? AND owner=?',id,account.user_id)]);
   await securityAudit(env,actor,'receiver_revoke','success',id);return json({deleted:true});
  }
- if(Object.keys(a).some(k=>!['name','expires_in_days'].includes(k)))throw error('Unexpected argument.');
+ if(Object.keys(a).some(k=>!['name','expires_in_days','account_id'].includes(k)))throw error('Unexpected argument.');
+ let recipient=account;
+ if(a.account_id!==undefined){
+  if(typeof a.account_id!=='string'||!/^[a-f0-9]{64}$/.test(a.account_id))throw error('Invalid recipient account.');
+  if(account.role!=='owner'&&a.account_id!==await hash(account.email))throw error('Only the owner can create credentials for another account.',-32001);
+  if(account.role==='owner'){
+   const rows=(await stmt(env.DB,'SELECT email,user_id,enabled FROM accounts').all()).results;
+   recipient=null;for(const row of rows)if(await hash(row.email)===a.account_id){recipient=row;break;}
+  }
+ }
+ if(!recipient?.user_id||!recipient.enabled||!configuredAccounts(env).some(row=>row.email===recipient.email))throw error('Recipient must be an enabled, initialized authorized account.',-32001);
+ const recipientInfo={account_id:await hash(recipient.email),email:recipient.email,is_self:recipient.user_id===account.user_id};
  const label=text(a.name,80).trim(),days=a.expires_in_days??30;
  if(!label||![1,7,30,90].includes(days))throw error('Provide a name and lifetime of 1, 7, 30 or 90 days.');
  const secret='dcr_'+btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'');
  const receiver={id:crypto.randomUUID(),name:label,created:now(),expires:new Date(Date.now()+days*86400000).toISOString()};
- await securityAudit(env,actor,'receiver_create','attempt',receiver.id);
- const inserted=await stmt(env.DB,'INSERT INTO receiver_credentials (id,owner,name,secret_hash,created,expires) SELECT ?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM receiver_credentials WHERE owner=?)<20 RETURNING id',receiver.id,account.user_id,label,await hash(secret),receiver.created,receiver.expires,account.user_id).first();
+ const auditResource=receiver.id+':account:'+recipientInfo.account_id;
+ await securityAudit(env,actor,'receiver_create','attempt',auditResource);
+ const inserted=await stmt(env.DB,'INSERT INTO receiver_credentials (id,owner,name,secret_hash,created,expires) SELECT ?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM receiver_credentials WHERE owner=?)<20 RETURNING id',receiver.id,recipient.user_id,label,await hash(secret),receiver.created,receiver.expires,recipient.user_id).first();
  if(!inserted)throw error('Revoke an existing receiver before creating another.');
- await securityAudit(env,actor,'receiver_create','success',receiver.id);return json({receiver,secret},201);
+ let auditWarning=false;try{await securityAudit(env,actor,'receiver_create','success',auditResource);}catch{auditWarning=true;console.warn(JSON.stringify({event:'security_audit_unavailable',stage:'completion'}));}
+ return json({receiver,secret,recipient:recipientInfo,...(auditWarning?{audit_warning:'audit_unavailable'}:{})},201);
 }
 async function receiverRequest(request,env){
  if(request.method!=='POST')return json({error:'POST required'},405);

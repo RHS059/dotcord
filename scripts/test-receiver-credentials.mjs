@@ -54,6 +54,33 @@ try{
  const bridge=await (await companionCall('receiver-platform-subject')).json();assert.ok(bridge.result?.id,JSON.stringify(bridge));assert.equal(relayCalls,1);
  events=[];await mention('recipient');assert.ok(events.some(e=>e.body.data.dot_id==='recipient'&&e.subscription===bridge.result.id),'Shared app mention reaches companion-registered callback');
  await management('alpha','DELETE',{id:paired.receiver.id});globalThis.fetch=external;
+ // Owner creation targets canonical recipients; management authority remains self-only.
+ const digest=async value=>Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))).toString('hex');
+ const alphaId=await digest('alpha@example.test'),betaId=await digest('beta@example.test');
+ assert.equal((await management('beta','POST',{name:'Denied target',account_id:alphaId})).status,403);
+ env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'alpha@example.test',role:'owner'},{email:'beta@example.test',role:'member'},{email:'new@example.test',role:'member'}]);
+ const selectedResponse=await management('alpha','POST',{name:'Selected recipient',account_id:betaId});assert.equal(selectedResponse.status,201);
+ const selected=await selectedResponse.json();assert.equal(sql.prepare('SELECT owner FROM receiver_credentials WHERE id=?').get(selected.receiver.id).owner,'beta');
+ assert.deepEqual(selected.recipient,{account_id:betaId,email:'beta@example.test',is_self:false});
+ assert.ok(!(await (await management('alpha','GET')).json()).receivers.some(r=>r.id===selected.receiver.id));
+ assert.ok((await (await management('beta','GET')).json()).receivers.some(r=>r.id===selected.receiver.id));
+ assert.equal((await management('alpha','DELETE',{id:selected.receiver.id})).status,403);
+ const audit=sql.prepare("SELECT actor,resource FROM security_audit WHERE action='receiver_create' AND outcome='success' AND resource LIKE ?").get(selected.receiver.id+'%');
+ assert.equal(audit.actor,'account:'+await digest('alpha'));assert.equal(audit.resource,selected.receiver.id+':account:'+betaId);assert.ok(!JSON.stringify(audit).includes('@'));
+ assert.equal((await receiver(selected.secret,'status')).result.account_binding,(await tool('beta','get_wake_status')).account_binding);
+ assert.equal((await management('alpha','POST',{name:'Raw identity',user_id:'beta'})).status,400);
+ assert.equal((await management('alpha','POST',{name:'Raw binding',account_binding:betaId})).status,400);
+ assert.equal((await management('alpha','POST',{name:'Invalid',account_id:'beta'})).status,400);
+ assert.equal((await management('alpha','POST',{name:'Unknown',account_id:'0'.repeat(64)})).status,403);
+ assert.equal((await management('alpha','POST',{name:'Uninitialized',account_id:await digest('new@example.test')})).status,403);
+ sql.prepare('UPDATE accounts SET enabled=0 WHERE user_id=?').run('beta');assert.equal((await management('alpha','POST',{name:'Disabled',account_id:betaId})).status,403);sql.prepare('UPDATE accounts SET enabled=1 WHERE user_id=?').run('beta');
+ env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'alpha@example.test',role:'owner'}]);assert.equal((await management('alpha','POST',{name:'Removed',account_id:betaId})).status,403);
+ env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'alpha@example.test',role:'owner'},{email:'beta@example.test',role:'member'}]);
+ for(let i=1;i<20;i++)assert.equal((await management('alpha','POST',{name:'Target limit '+i,account_id:betaId})).status,201);
+ assert.equal((await management('alpha','POST',{name:'Target full',account_id:betaId})).status,400);
+ assert.equal((await management('alpha','POST',{name:'Issuer not full'})).status,201);
+ assert.equal((await management('beta','DELETE',{id:selected.receiver.id})).status,200);
+ env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'alpha@example.test',role:'member'},{email:'beta@example.test',role:'member'}]);assert.equal((await management('alpha','POST',{name:'Demoted issuer',account_id:betaId})).status,403);
  const fourth=await (await management('alpha','POST',{name:'Current access'})).json();env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'beta@example.test',role:'member'}]);assert.equal((await receiver(fourth.secret,'status')).status,401);
  console.log('PASS: receiver credential issuance, hash-only storage, owner isolation, restricted authority, namespace isolation, mention delivery, expiry/revocation/readiness, in-flight revocation, current allowlist. Synthetic callbacks only.');
 }finally{globalThis.fetch=originalFetch;sql.close();}
