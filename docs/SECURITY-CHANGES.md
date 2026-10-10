@@ -42,3 +42,7 @@ The shared-app release requires migration `0010_shared_app_onboarding.sql` after
 ## Google sign-in follow-up
 
 Migration `0011_google_signin_handle_choice.sql` adds optional Google authentication and recipient-chosen handles. See [shared setup](SHARED-APP.md) for private provider configuration, trusted host boundaries, explicit account linking, and deployment verification.
+
+## Owner-managed Google configuration
+
+Migration `0012_google_oauth_settings.sql` adds server-side Google provider settings. The owner configures the Web OAuth client once in Settings; members use the Google sign-in button without supplying application credentials. Saved configuration overrides the existing runtime fallback. Configuration writes require owner authorization and same-origin requests, and saved secrets are never returned by the settings API. The callback is fixed to the current deployment origin. Protect database access and backups; this application does not add separate encryption for the recoverable provider secret. Browser Google login remains independent of the optional same-email host linking used for native MCP.

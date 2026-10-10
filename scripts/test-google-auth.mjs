@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { googleConfigured, googleIdentity, handleGoogleAuth } from '../worker/google-auth.js';
 const sql = new DatabaseSync(':memory:');
 sql.exec(`CREATE TABLE oauth_states (id TEXT PRIMARY KEY,browser_hash TEXT,verifier TEXT,nonce TEXT,created INTEGER,expires INTEGER);
-CREATE TABLE auth_sessions (id TEXT PRIMARY KEY,subject TEXT,email TEXT,user_id TEXT,created INTEGER,expires INTEGER);`);
+CREATE TABLE auth_sessions (id TEXT PRIMARY KEY,subject TEXT,email TEXT,user_id TEXT,created INTEGER,expires INTEGER,config_fingerprint TEXT);`);
 const DB = { prepare(query) { return { bind(...args) { return { first: async () => sql.prepare(query).get(...args) || null, run: async () => sql.prepare(query).run(...args) }; } }; } };
 const env = { DB, GOOGLE_CLIENT_ID: 'synthetic-client', GOOGLE_CLIENT_SECRET: 'synthetic-secret', GOOGLE_REDIRECT_URI: 'https://dotcord.test/auth/google/callback' };
 const b64 = value => Buffer.from(value).toString('base64url');

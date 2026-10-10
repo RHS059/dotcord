@@ -32,12 +32,12 @@ function session(subject,email,user_id,expired=false){
 }
 const keys=await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
 const jwk={...await crypto.subtle.exportKey('jwk',keys.publicKey),kid:'integration-key',alg:'RS256',use:'sig'};
-let tokenResponse;
+let tokenResponse, lastTokenRequest, onTokenExchange;
 const originalFetch=globalThis.fetch;
 globalThis.fetch=async (url,options={})=>{
  if(String(url)==='https://chatgpt.com/google-integration-fixture'){const event=JSON.parse(options.body);return Response.json({challenge:event.challenge});}
  if(String(url)==='https://www.googleapis.com/oauth2/v3/certs')return Response.json({keys:[jwk]});
- if(String(url)==='https://oauth2.googleapis.com/token')return Response.json({id_token:tokenResponse});
+ if(String(url)==='https://oauth2.googleapis.com/token'){lastTokenRequest=new URLSearchParams(options.body);if(onTokenExchange)await onTokenExchange();return Response.json({id_token:tokenResponse});}
  throw new Error('Unexpected external request: '+url);
 };
 async function googleLogin(subject,email,hostIdentity){
@@ -45,7 +45,7 @@ async function googleLogin(subject,email,hostIdentity){
  assert.equal(start.status,302);
  const location=new URL(start.headers.get('location'));
  const encode=value=>Buffer.from(JSON.stringify(value)).toString('base64url');
- const input=encode({alg:'RS256',kid:jwk.kid})+'.'+encode({iss:'https://accounts.google.com',aud:env.GOOGLE_CLIENT_ID,sub:subject,email,email_verified:true,nonce:location.searchParams.get('nonce'),iat:Math.floor(Date.now()/1000),exp:Math.floor(Date.now()/1000)+3600});
+ const input=encode({alg:'RS256',kid:jwk.kid})+'.'+encode({iss:'https://accounts.google.com',aud:location.searchParams.get('client_id'),sub:subject,email,email_verified:true,nonce:location.searchParams.get('nonce'),iat:Math.floor(Date.now()/1000),exp:Math.floor(Date.now()/1000)+3600});
  tokenResponse=input+'.'+Buffer.from(await crypto.subtle.sign('RSASSA-PKCS1-v1_5',keys.privateKey,new TextEncoder().encode(input))).toString('base64url');
  const headers={cookie:start.headers.get('set-cookie').split(';')[0]};
  if(hostIdentity){headers['oai-authenticated-user-id']=hostIdentity.id;headers['oai-authenticated-user-email']=hostIdentity.email;}
@@ -128,7 +128,54 @@ try{
  sql.prepare('UPDATE accounts SET enabled=1 WHERE email=?').run('fresh@example.test');
  const logout=await req('/auth/logout',{}, {cookie:fresh.cookie});assert.equal(logout.status,200);
  assert.equal((await req('/api/account',null,{cookie:fresh.cookie,...host('admin')})).status,401,'Revoked session cannot silently fall back to host administrator');
+ // Owner-saved configuration drives a complete signed OIDC flow without hosting credentials.
+ const pending=await worker.fetch(new Request('https://shared.test/auth/google/start'),env);
+ assert.equal(pending.status,302);
+ const dbClient='database-client.apps.googleusercontent.com',dbSecret='database-synthetic-secret';
+ const configured=await req('/api/auth/google-settings',{client_id:dbClient,client_secret:dbSecret},host('admin'));
+ assert.equal(configured.status,200,JSON.stringify(configured));
+ assert.equal(sql.prepare('SELECT COUNT(*) n FROM auth_sessions').get().n,0,'Configuration mutation revokes existing sessions');
+ assert.equal(sql.prepare('SELECT COUNT(*) n FROM oauth_states').get().n,0,'Configuration mutation invalidates pending flows');
+ assert.equal((await req('/api/account',null,{cookie:agent_one.cookie})).status,401);
+ const pendingLocation=new URL(pending.headers.get('location'));
+ const staleCallback=await worker.fetch(new Request('https://shared.test/auth/google/callback?state='+pendingLocation.searchParams.get('state')+'&code=synthetic',{headers:{cookie:pending.headers.get('set-cookie').split(';')[0]}}),env);
+ assert.equal(staleCallback.status,403,'Previously started flow cannot finish after rotation');
+ delete env.GOOGLE_CLIENT_ID;delete env.GOOGLE_CLIENT_SECRET;delete env.GOOGLE_REDIRECT_URI;
+ assert.equal((await req('/api/auth/providers')).data.google,true);
+ const dbLogin=await googleLogin('agent_one-subject','agent_one@example.test');
+ assert.equal(dbLogin.status,303,'DB-only saved credentials support full signed Google callback');
+ assert.equal(lastTokenRequest.get('client_id'),dbClient);assert.equal(lastTokenRequest.get('client_secret'),dbSecret);
+ assert.equal(lastTokenRequest.get('redirect_uri'),'https://shared.test/auth/google/callback');
+ assert.equal((await req('/api/account',null,{cookie:dbLogin.cookie})).status,200);
+ assert.equal((await req('/api/auth/google-settings',null,host('admin'))).data.source,'database');
+ const rotate=await req('/api/auth/google-settings',{client_id:'rotated-client.apps.googleusercontent.com',client_secret:'rotated-secret'},host('admin'));
+ assert.equal(rotate.status,200);
+ assert.equal((await req('/api/account',null,{cookie:dbLogin.cookie})).status,401);
+ const rotatedLogin=await googleLogin('agent_one-subject','agent_one@example.test');assert.equal(rotatedLogin.status,303);
+ assert.equal(lastTokenRequest.get('client_id'),'rotated-client.apps.googleusercontent.com');
+ const sameConfig=await req('/api/auth/google-settings',{client_id:'rotated-client.apps.googleusercontent.com',client_secret:''},host('admin'));assert.equal(sameConfig.status,200);
+ assert.equal((await req('/api/account',null,{cookie:rotatedLogin.cookie})).status,401,'Even same-config saves revoke previous sessions');
+ const afterSame=await googleLogin('agent_one-subject','agent_one@example.test');assert.equal(afterSame.status,303);
+ assert.equal(lastTokenRequest.get('client_secret'),'rotated-secret','Blank same-client secret retains saved credential');
+
+ // Rotation during a token exchange must not resurrect an old-config session.
+ let exchangeStarted,continueExchange;
+ const started=new Promise(resolve=>{exchangeStarted=resolve;}),release=new Promise(resolve=>{continueExchange=resolve;});
+ onTokenExchange=async()=>{exchangeStarted();await release;};
+ const inFlight=googleLogin('agent_one-subject','agent_one@example.test');await started;
+ assert.equal((await req('/api/auth/google-settings',{client_id:'newest-client.apps.googleusercontent.com',client_secret:'newest-secret'},host('admin'))).status,200);
+ continueExchange();const racedLogin=await inFlight;onTokenExchange=null;
+ assert.ok(racedLogin.status!==303||(await req('/api/account',null,{cookie:racedLogin.cookie})).status===401,'An old-config in-flight callback must never create an accepted session');
+ const removed=await req('/api/auth/google-settings',null,{...host('admin'),method:'DELETE'});assert.equal(removed.status,200);
+ assert.equal((await req('/api/auth/providers')).data.google,false);
+ assert.equal((await req('/api/account',null,{cookie:rotatedLogin.cookie})).status,401);
+ assert.equal((await req('/auth/logout',{}, {cookie:rotatedLogin.cookie})).status,200,'Logout remains available after provider removal');
+ env.GOOGLE_CLIENT_ID='fallback-client.apps.googleusercontent.com';env.GOOGLE_CLIENT_SECRET='fallback-secret';env.GOOGLE_REDIRECT_URI='https://shared.test/auth/google/callback';
+ assert.equal((await req('/api/auth/google-settings',{client_id:dbClient,client_secret:dbSecret},host('admin'))).status,200);
+ const fallback=await req('/api/auth/google-settings',null,{...host('admin'),method:'DELETE'});assert.equal(fallback.status,200);assert.equal(fallback.data.source,'environment');
+ const fallbackLogin=await googleLogin('agent_one-subject','agent_one@example.test');assert.equal(fallbackLogin.status,303);assert.equal(lastTokenRequest.get('client_id'),env.GOOGLE_CLIENT_ID);assert.equal(lastTokenRequest.get('client_secret'),env.GOOGLE_CLIENT_SECRET);
+
  const audit=JSON.stringify(sql.prepare('SELECT * FROM security_audit').all());
- for(const secret of [fresh.cookie.split('=')[1],agent_one.cookie.split('=')[1],accepted.data.secret,admitted[0].data.secret,invite])assert.equal(audit.includes(secret),false);
- console.log('PASS Google integration: signed synthetic callback, identity isolation/linking, canonical native MCP ownership, cookie CSRF/expiry/revocation, current allowlist, recipient-chosen handles, collision/replay/concurrent initial-token safety. External provider mocked.');
+ for(const secret of [dbSecret,'rotated-secret',fresh.cookie.split('=')[1],agent_one.cookie.split('=')[1],accepted.data.secret,admitted[0].data.secret,invite])assert.equal(audit.includes(secret),false);
+ console.log('PASS Google integration: signed synthetic env/DB callback, settings rotation and in-flight invalidation, fallback, identity isolation/linking, canonical native MCP ownership, cookie CSRF/expiry/revocation, current allowlist, recipient-chosen handles, collision/replay/concurrent initial-token safety. External provider mocked.');
 }finally{globalThis.fetch=originalFetch;sql.close();}

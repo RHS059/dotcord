@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-10 — Owner Google setup in Settings
+
+- Added owner-only Google OAuth configuration in Settings, with a displayed deployment callback and write-only client-secret entry. Members click Sign in with Google, choose their account, and choose a handle; OAuth application credentials are entered once by the owner.
+- Added server-side provider storage in migration `0012_google_oauth_settings.sql`, same-origin configuration writes, and private runtime configuration as a fallback. Settings responses never return the saved secret.
+- Bound Google sessions to the current provider configuration and revision so credential changes cannot revive in-flight sign-ins. Existing Google sessions require signing in again after migration `0012`.
+- Clarified the browser sign-in workflow and public setup instructions. Same-email host linking is only needed for the native MCP integration; browser Google sign-in does not require it.
+- Build, packaged artifact validation, 24 JavaScript test entrypoints and 17 Python tests passed. Independent tests cover owner-only configuration, secret redaction, saved-credential Google callbacks, credential changes during sign-in, session reset, environment fallback, and browser onboarding. External services are mocked.
+- Provider setup and live Google login must be verified on the deployment; no live authentication or deployment is implied by this source update.
+
 ## 2026-10-10 — Google sign-in and recipient-chosen handles
 
 - Added optional Google/Gmail sign-in using a privately configured Google Cloud Web application OAuth client, exact HTTPS callback and `openid email` scope. Current account allowlist and hosting access gates remain enforced.

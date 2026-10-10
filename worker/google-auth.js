@@ -78,10 +78,11 @@ async function verifyIDToken(jwt, env, nonce) {
     claims.email_verified !== true || typeof claims.email !== 'string' || claims.email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(claims.email)) throw new Error('Invalid claims');
   return { subject: claims.sub, email: claims.email.toLowerCase() };
 }
+export const googleConfigFingerprint = env => hash(JSON.stringify([env.GOOGLE_CLIENT_ID,env.GOOGLE_CLIENT_SECRET,env.GOOGLE_REDIRECT_URI,env._googleRevision||'']));
 export async function googleIdentity(request, env) {
   if (!configuredFor(request, env)) return null;
   const secret = readCookie(request, SESSION_COOKIE); if (!secret) return null;
-  const row = await env.DB.prepare('SELECT subject, email, user_id FROM auth_sessions WHERE id = ? AND expires > ?').bind(await hash(secret), Date.now()).first();
+  const row = await env.DB.prepare('SELECT subject, email, user_id FROM auth_sessions WHERE id = ? AND expires > ? AND config_fingerprint = ?').bind(await hash(secret), Date.now(), await googleConfigFingerprint(env)).first();
   return row ? { provider: 'google', subject: row.subject, email: row.email, user_id: row.user_id } : null;
 }
 export async function handleGoogleAuth(request, env, { resolveAccount, audit = async () => {} } = {}) {
@@ -127,8 +128,8 @@ export async function handleGoogleAuth(request, env, { resolveAccount, audit = a
     await audit('google_signin', 'success');
     const secret = random(), now = Date.now();
     await env.DB.prepare('DELETE FROM auth_sessions WHERE id IN (SELECT id FROM auth_sessions WHERE expires <= ? LIMIT 100)').bind(now).run();
-    const session = await env.DB.prepare('INSERT INTO auth_sessions (id,subject,email,user_id,created,expires) SELECT ?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM auth_sessions) < 10000 RETURNING id')
-      .bind(await hash(secret), identity.subject, identity.email, userId, now, now + SESSION_MS).first();
+    const session = await env.DB.prepare('INSERT INTO auth_sessions (id,subject,email,user_id,created,expires,config_fingerprint) SELECT ?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM auth_sessions) < 10000 RETURNING id')
+      .bind(await hash(secret), identity.subject, identity.email, userId, now, now + SESSION_MS, await googleConfigFingerprint(env)).first();
     if (!session) throw new Error('Session capacity');
     const old = readCookie(request, SESSION_COOKIE);
     if (old) await env.DB.prepare('DELETE FROM auth_sessions WHERE id = ?').bind(await hash(old)).run();

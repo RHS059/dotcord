@@ -1,4 +1,4 @@
-import {handleGoogleAuth,googleIdentity} from './google-auth.js';
+import {handleGoogleAuth,googleIdentity,googleConfigured} from './google-auth.js';
 const EVENT='dot.mentioned';
 const GLOBAL=Symbol('wake-token');
 const INBOX_TTL_MS=15*60*1000;
@@ -449,18 +449,55 @@ async function onboard(request,env,account,actor){
  return json({registered:true,dot_id:dot,token,secret,subscription_required:true},201);
 }
 
+// Provider credentials stay server-side; database access/backups require secret-grade protection.
+async function googleEnvironment(env){
+ if(!env.DB)return env;
+ const revision=await stmt(env.DB,"SELECT next_run FROM security_maintenance WHERE id='google_config_revision'").first();
+ env={...env,_googleRevision:revision?String(revision.next_run):''};
+ const row=await stmt(env.DB,"SELECT client_id,client_secret,redirect_uri FROM google_oauth_settings WHERE id='google'").first();
+ return row?{...env,GOOGLE_CLIENT_ID:row.client_id,GOOGLE_CLIENT_SECRET:row.client_secret,GOOGLE_REDIRECT_URI:row.redirect_uri,_googleSource:'database'}:{...env,_googleSource:googleConfigured(env)?'environment':'none'};
+}
+async function googleSettings(request,env,account,actor,baseEnv){
+ if(account.role!=='owner')throw error('Only the owner can configure Google sign-in.',-32001);
+ const url=new URL(request.url),redirect_uri=url.origin+'/auth/google/callback';
+ if(url.protocol!=='https:')throw error('Google sign-in requires HTTPS.');
+ if(request.method==='GET')return json({configured:googleConfigured(env)&&env.GOOGLE_REDIRECT_URI===redirect_uri,source:env._googleSource||'none',client_id:env.GOOGLE_CLIENT_ID||'',has_secret:Boolean(env.GOOGLE_CLIENT_SECRET),redirect_uri});
+ if(!['POST','DELETE'].includes(request.method))return json({error:'GET, POST or DELETE required'},405);
+ sameOrigin(request);
+ await securityAudit(env,actor,'google_configuration','attempt');
+ const epoch=crypto.getRandomValues(new Uint32Array(2));const revision=epoch[0]*1048576+(epoch[1]>>>12);
+ const rotate=()=>stmt(env.DB,"INSERT INTO security_maintenance (id,next_run) VALUES ('google_config_revision',?) ON CONFLICT(id) DO UPDATE SET next_run=excluded.next_run",revision);
+ if(request.method==='DELETE'){
+  await env.DB.batch([rotate(),stmt(env.DB,"DELETE FROM google_oauth_settings WHERE id='google'"),stmt(env.DB,'DELETE FROM oauth_states'),stmt(env.DB,'DELETE FROM auth_sessions')]);
+ }else{
+  const a=await readJSON(request,2000);
+  if(!a||typeof a!=='object'||Array.isArray(a)||Object.keys(a).some(k=>!['client_id','client_secret'].includes(k)))throw error('Invalid Google configuration.');
+  const client_id=typeof a.client_id==='string'?a.client_id.trim():'';
+  if(!/^[A-Za-z0-9._-]{1,240}\.apps\.googleusercontent\.com$/.test(client_id))throw error('Enter a Google Web OAuth client ID.');
+  if(a.client_secret!==undefined&&typeof a.client_secret!=='string')throw error('Invalid client secret.');
+  const supplied=(a.client_secret||'').trim();
+  const client_secret=supplied||(client_id===env.GOOGLE_CLIENT_ID?env.GOOGLE_CLIENT_SECRET:'');
+  if(typeof client_secret!=='string'||!client_secret||client_secret.length>512||/\s/.test(client_secret))throw error('Enter the Google client secret for this client ID.');
+  await env.DB.batch([rotate(),stmt(env.DB,"INSERT INTO google_oauth_settings (id,client_id,client_secret,redirect_uri,updated) VALUES ('google',?,?,?,?) ON CONFLICT(id) DO UPDATE SET client_id=excluded.client_id,client_secret=excluded.client_secret,redirect_uri=excluded.redirect_uri,updated=excluded.updated",client_id,client_secret,redirect_uri,now()),stmt(env.DB,'DELETE FROM oauth_states'),stmt(env.DB,'DELETE FROM auth_sessions')]);
+ }
+ await securityAudit(env,actor,'google_configuration',request.method==='DELETE'?'removed':'updated');
+ const effective=await googleEnvironment(baseEnv);
+ return json({ok:true,configured:googleConfigured(effective)&&effective.GOOGLE_REDIRECT_URI===redirect_uri,source:effective._googleSource||'none',client_id:effective.GOOGLE_CLIENT_ID||'',has_secret:Boolean(effective.GOOGLE_CLIENT_SECRET),redirect_uri});
+}
+
 const wakeClient=null;
 const page='<!doctype html><html><body><div id="root"></div></body></html>';
 export default {async fetch(request,env){
+ const baseEnv=env;
  const url=new URL(request.url),path=url.pathname;let actor='anonymous',action='request',p;
- try{const authResponse=await handleGoogleAuth(request,env,{resolveAccount:identity=>resolveGoogleAccount(identity,request,env),audit:(action,outcome)=>securityAudit(env,'anonymous',action,outcome)});if(authResponse)return authResponse;}catch{return json({error:'Sign-in service unavailable.'},503);}
+ try{env=await googleEnvironment(env);const authResponse=await handleGoogleAuth(request,env,{resolveAccount:identity=>resolveGoogleAccount(identity,request,env),audit:(action,outcome)=>securityAudit(env,'anonymous',action,outcome)});if(authResponse)return authResponse;}catch{return json({error:'Sign-in service unavailable.'},503);}
  if(path==='/'&&request.method==='GET')return new Response(page,{headers:{'content-type':'text/html;charset=utf-8','cache-control':'no-store','content-security-policy':"default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self' https://chatgpt.com",'x-content-type-options':'nosniff','referrer-policy':'strict-origin-when-cross-origin'}});
  if(path==='/clients/dotcord_wake.py'){
   if(request.method!=='GET')return json({error:'GET required'},405);
   if(!wakeClient)return json({error:'Client download is available in the built Site.'},503);
   return new Response(wakeClient,{headers:{'content-type':'text/x-python;charset=utf-8','content-disposition':'attachment; filename="dotcord_wake.py"','cache-control':'no-store','x-content-type-options':'nosniff'}});
  }
- if(!['/api/auth/link-host','/api/tokens','/api/accounts','/api/account','/api/audit','/api/invitations','/api/onboarding','/mcp','/api/tool','/api/wake'].includes(path))return json({error:'Not found'},404);
+ if(!['/api/auth/google-settings','/api/auth/link-host','/api/tokens','/api/accounts','/api/account','/api/audit','/api/invitations','/api/onboarding','/mcp','/api/tool','/api/wake'].includes(path))return json({error:'Not found'},404);
  const rpc=result=>json({jsonrpc:'2.0',id:p.id??null,result});
  try{
   if(path==='/mcp'){
@@ -480,10 +517,11 @@ export default {async fetch(request,env){
   else {account=await accountAccess(request,env);owner=account.user_id;actor=await accountActor(owner);}
   if(account?.auth_method==='google'&&path==='/mcp'&&!request.headers.get('origin'))throw error('Same-origin request required for Google sessions.',-32001);
   await maintenance(env);
+  if(path==='/api/auth/google-settings'){action='google_configuration';return await googleSettings(request,env,account,actor,baseEnv);}
   if(path==='/api/auth/link-host'){action='link_host';return await linkHost(request,env,actor);}
   if(path==='/api/invitations'){action='invitations';return await invitationManagement(request,env,account,actor);}
   if(path==='/api/onboarding'){action='onboarding';return await onboard(request,env,account,actor);}
-  if(path==='/api/account'){if(request.method!=='GET')return json({error:'GET required'},405);const own=await stmt(env.DB,'SELECT COUNT(*) n FROM dots WHERE owner=?',account.user_id).first();const setup=await stmt(env.DB,'SELECT user_id FROM account_onboarding WHERE user_id=?',account.user_id).first();return json({email:maskEmail(account.email),auth_method:account.auth_method,can_manage_accounts:account.role==='owner',needs_setup:own.n===0&&!setup});}
+  if(path==='/api/account'){if(request.method!=='GET')return json({error:'GET required'},405);const own=await stmt(env.DB,'SELECT COUNT(*) n FROM dots WHERE owner=?',account.user_id).first();const setup=await stmt(env.DB,'SELECT user_id FROM account_onboarding WHERE user_id=?',account.user_id).first();const linked=await stmt(env.DB,"SELECT subject FROM account_identities WHERE provider='host' AND user_id=? LIMIT 1",account.user_id).first();return json({email:maskEmail(account.email),auth_method:account.auth_method,host_linked:Boolean(linked)||account.auth_method==='host',can_manage_accounts:account.role==='owner',needs_setup:own.n===0&&!setup});}
   if(path==='/api/accounts'){action='accounts';return await accountSettings(request,env,account,actor);}
   if(path==='/api/tokens'){action='tokens';return await tokenManagement(request,env,account,actor);}
   if(path==='/api/audit'){

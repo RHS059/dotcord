@@ -32,11 +32,16 @@ export const oauthStates = sqliteTable('oauth_states',{
  id:text('id').primaryKey(),browserHash:text('browser_hash').notNull(),verifier:text('verifier').notNull(),nonce:text('nonce').notNull(),created:integer('created').notNull(),expires:integer('expires').notNull()
 },table=>[index('oauth_states_expiry').on(table.expires)]);
 export const authSessions = sqliteTable('auth_sessions',{
- id:text('id').primaryKey(),subject:text('subject').notNull(),email:text('email').notNull(),userId:text('user_id').notNull(),created:integer('created').notNull(),expires:integer('expires').notNull()
+ id:text('id').primaryKey(),subject:text('subject').notNull(),email:text('email').notNull(),userId:text('user_id').notNull(),created:integer('created').notNull(),expires:integer('expires').notNull(),configFingerprint:text('config_fingerprint')
 },table=>[index('auth_sessions_expiry').on(table.expires)]);
 export const accountIdentities = sqliteTable('account_identities',{
  provider:text('provider').notNull(),subject:text('subject').notNull(),userId:text('user_id').notNull(),email:text('email').notNull()
 },table=>[primaryKey({columns:[table.provider,table.subject]})]);
 export const accountOnboarding = sqliteTable('account_onboarding',{
  userId:text('user_id').primaryKey(),claim:text('claim').notNull(),created:text('created').notNull()
+});
+
+// Server-only provider secret; never expose this table through public APIs.
+export const googleOauthSettings = sqliteTable('google_oauth_settings',{
+ id:text('id').primaryKey(),clientId:text('client_id').notNull(),clientSecret:text('client_secret').notNull(),redirectUri:text('redirect_uri').notNull(),updated:text('updated').notNull()
 });

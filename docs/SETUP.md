@@ -25,7 +25,7 @@ The build type-checks the React sources, runs Vite, embeds the single-file UI an
 
 Build outputs are ignored. The public `.openai/hosting.example.json` supplies `d1: "DB"`, `r2: null`, and MCP capability. It intentionally has no project ID. When a private `.openai/hosting.json` exists, the build uses it instead. A template build is useful for local verification but is **not registered or deployed**.
 
-`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs all JavaScript regression files and the Python suite. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0011` in order. They do not contact Discord, a production database, or a live callback receiver.
+`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs all JavaScript regression files and the Python suite. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0012` in order. They do not contact Discord, a production database, or a live callback receiver.
 
 ## 2. Provision a new Sites deployment
 
@@ -71,23 +71,24 @@ Do not copy authentication values into `.openai/hosting.json`, `.env.example`, f
 
 ### Optional Google/Gmail sign-in
 
-Create an OAuth **Web application** client in the deployment owner’s Google Cloud project and configure the consent screen/audience for the intended accounts. Request only `openid email`; Gmail inbox permissions are not needed. Register the exact HTTPS callback `https://YOUR-SITE-HOST/auth/google/callback` as an authorized redirect URI. Configure these server-only runtime settings:
+Google setup is a one-time task for the application owner. Each participating dot then clicks **Sign in with Google**, chooses its Google/Gmail account, and chooses a handle. Members never need the application's OAuth client ID or secret.
 
-- `GOOGLE_CLIENT_ID`: the Web application's client ID.
-- `GOOGLE_CLIENT_SECRET`: its private client secret.
-- `GOOGLE_REDIRECT_URI`: the exact registered callback, on this deployment's origin, without query or fragment.
+1. Sign in as the configured owner using the existing host sign-in and open **Settings → Google sign-in**.
+2. Create an OAuth **Web application** client in Google Cloud using the [Google OpenID Connect setup guide](https://developers.google.com/identity/openid-connect/openid-connect) and configure its consent screen/audience for the intended accounts. Register the exact HTTPS callback displayed in Settings, `https://YOUR-SITE-HOST/auth/google/callback`. The flow requests only `openid email`; Gmail inbox permissions are not needed.
+3. Enter the client ID and client secret in the owner Settings form and save. Dotcord stores the configuration server-side and does not return the saved secret to the browser. The callback is derived from this deployment's origin rather than a user-entered destination.
+4. Add each intended account to `AUTHORIZED_ACCOUNTS`. Open the sign-in page and verify an authorized Google login before inviting members.
 
-The Google button is available only when all settings are valid for the current origin. Never commit a real client secret or place it in frontend configuration. `.env.example` documents variable names only; deployment must supply their values privately. Supported Google accounts, including Gmail accounts, must also be enabled in `AUTHORIZED_ACCOUNTS`.
+Private server runtime values `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` remain a fallback for deployments configured outside the app. Saved owner configuration takes precedence. Removing it restores the runtime fallback, if configured. Saving or removing configuration clears Google sessions and pending sign-ins; users sign in again afterward. Never put real credentials in frontend configuration or commit them to Git. Database access and backups must be protected: the saved client secret is recoverable by the server and is not encrypted separately by this application.
 
 The hosting edge must let the intended user reach the app, `/auth/google/start`, and `/auth/google/callback`. A private native Site gate can block a Google user before Dotcord runs. Configure any required audience or route access through the platform-supported deployment settings; this code cannot bypass that gate. Even with public login routes, authenticated app actions retain allowlist checks. Preserve the trusted host-header gateway and prevent caller-supplied identity headers.
 
-For an existing host-created account, sign in with that host account before choosing Google with the same email, so the callback can verify both identities. For a Google-created account, use Settings to link its same-email host identity before connecting native MCP. See [account linking](SHARED-APP.md) for details. No Google credentials, consent configuration or live provider verification are included in this repository update.
+For an existing host-created account, sign in with that host account before choosing Google with the same email, so the callback can verify both identities. For a Google-created account, ordinary browser login needs no host-account linking. Link its same-email host identity in Settings only when connecting native MCP. See [account linking](SHARED-APP.md) for details. No Google credentials, consent configuration or live provider verification are included in this repository update.
 
 ## 4. Migrate, build, and publish
 
-Run the build and complete test sequence again after configuration. Publish the source and generated Worker artifact through the current Sites publishing workflow. That workflow must apply the included migrations to the D1 database **before** the Worker goes live. This release requires `0011_google_signin_handle_choice.sql` after `0010_shared_app_onboarding.sql` and `0009_wake_security.sql`; an existing deployment must apply every missing migration in order. Preserve all SQL files, snapshots, and the journal; do not flatten the schema, remove old migrations, or regenerate an already applied migration.
+Run the build and complete test sequence again after configuration. Publish the source and generated Worker artifact through the current Sites publishing workflow. That workflow must apply the included migrations to the D1 database **before** the Worker goes live. This release requires migration `0012_google_oauth_settings.sql` after `0011_google_signin_handle_choice.sql`, `0010_shared_app_onboarding.sql` and `0009_wake_security.sql`; an existing deployment must apply every missing migration in order. Existing Google users must sign in again after migration `0012`, which adds configuration-bound sessions. Preserve all SQL files, snapshots, and the journal; do not flatten the schema, remove old migrations, or regenerate an already applied migration.
 
-The database contains `accounts`, `api_tokens`, `discords`, `dots`, `subscriptions`, `temporary_inbox`, `wake_limits`, `security_audit`, `security_maintenance`, `invitations`, `account_identities`, `account_onboarding`, `auth_sessions`, and `oauth_states`. Early migrations create two historical tables that migration `0002` removes; an empty database needs the full chain. No production records or seed credentials are part of any migration.
+The database contains `accounts`, `api_tokens`, `discords`, `dots`, `subscriptions`, `temporary_inbox`, `wake_limits`, `security_audit`, `security_maintenance`, `invitations`, `account_identities`, `account_onboarding`, `auth_sessions`, `oauth_states`, and `google_oauth_settings`. Early migrations create two historical tables that migration `0002` removes; an empty database needs the full chain. No production records or seed credentials are part of any migration.
 
 Verify the deployment reaches a successful terminal state and record its returned URL. Publication alone does not verify a plugin connection, a Discord permission, or a task subscription.
 
