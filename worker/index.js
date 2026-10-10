@@ -157,7 +157,7 @@ if(n==='add_discord'){const label=a.name?text(a.name,80):'Discord '+((await stmt
 if(n==='update_discord'||n==='delete_discord'){const d=await stmt(db,'SELECT * FROM discords WHERE id=?',text(a.discord_id,100)).first();if(!d||!admin&&d.owner!==owner)throw error('You can only manage your own Discord entries.',-32001);
 if(n==='delete_discord'){await db.batch([stmt(db,'UPDATE dots SET discord_id=NULL,webhook_url=NULL WHERE discord_id=?',d.id),stmt(db,'DELETE FROM discords WHERE id=?',d.id)]);return {deleted:true};}
 const label=a.name?text(a.name,80):d.name;const match=a.channel_url?discordChannel(a.channel_url):[null,d.guild_id,d.channel_id];const token=a.bot_token!==undefined?botToken(a.bot_token):d.bot_token;const operations=[stmt(db,'UPDATE discords SET name=?,guild_id=?,channel_id=?,bot_token=? WHERE id=?',label,match[1],match[2],token,d.id)];await db.batch(operations);return {saved:true,id:d.id};}
-if(n==='delete_agent'){const d=await owned(db,a.dot_id,owner,admin);await db.batch([stmt(db,'UPDATE accounts SET primary_dot=NULL WHERE user_id=? AND primary_dot=?',d.owner,d.id),stmt(db,"DELETE FROM subscriptions WHERE dot=? AND owner=? AND scope='handle'",d.id,d.owner),stmt(db,'DELETE FROM temporary_inbox WHERE dot=? AND owner=?',d.id,d.owner),stmt(db,'DELETE FROM api_tokens WHERE dot=?',d.id),stmt(db,'DELETE FROM dots WHERE id=? AND owner=?',d.id,d.owner)]);return {deleted:true};}
+if(n==='delete_agent'){const d=await owned(db,a.dot_id,owner,admin);if(!admin&&await stmt(db,'SELECT id FROM api_tokens WHERE dot=? LIMIT 1',d.id).first())throw error('Only the admin can delete an agent with scoped tokens. Ask the admin to revoke its tokens first.',-32001);await db.batch([stmt(db,'UPDATE accounts SET primary_dot=NULL WHERE user_id=? AND primary_dot=?',d.owner,d.id),stmt(db,"DELETE FROM subscriptions WHERE dot=? AND owner=? AND scope='handle'",d.id,d.owner),stmt(db,'DELETE FROM temporary_inbox WHERE dot=? AND owner=?',d.id,d.owner),stmt(db,'DELETE FROM api_tokens WHERE dot=?',d.id),stmt(db,'DELETE FROM dots WHERE id=? AND owner=?',d.id,d.owner)]);return {deleted:true};}
 if(n==='update_agent'){const d=await owned(db,a.dot_id,owner,admin);const id=name(a.handle);if(a.agent_type&&!['dot','agent'].includes(a.agent_type))throw error('Invalid agent type.');if(id!==d.id&&await stmt(db,'SELECT id FROM dots WHERE id=?',id).first())throw error('This handle is already registered.');const c=await stmt(db,'SELECT * FROM discords WHERE id=?',text(a.discord_id,100)).first();if(!c)throw error('Select a configured Discord.');const saved=await stmt(db,'SELECT webhook_url FROM dots WHERE id=?',d.id).first();let webhook=saved.webhook_url;if(a.webhook_url)webhook=parseWebhook(a.webhook_url);const operations=[stmt(db,'UPDATE dots SET id=?,discord_id=?,webhook_url=?,agent_type=COALESCE(?,agent_type) WHERE id=? AND owner=?',id,c.id,webhook,a.agent_type||null,d.id,d.owner)];operations.push(stmt(db,"UPDATE accounts SET primary_dot=CASE WHEN ?='agent' THEN NULL ELSE ? END WHERE user_id=? AND primary_dot=?",a.agent_type||'dot',id,d.owner,d.id));if(id!==d.id)operations.push(stmt(db,'UPDATE api_tokens SET dot=?,name=? WHERE dot=?',id,id,d.id),stmt(db,"DELETE FROM subscriptions WHERE dot=? AND owner=? AND scope='handle'",d.id,d.owner),stmt(db,'DELETE FROM temporary_inbox WHERE dot=? AND owner=?',d.id,d.owner));await db.batch(operations);return {saved:true,dot_id:id};}
 if(n==='set_webhook'){const d=await owned(db,a.dot_id,owner,admin);const c=await stmt(db,'SELECT * FROM discords WHERE id=?',d.discord_id||'').first();if(!c)throw error('Select a Discord first.');const url=parseWebhook(a.webhook_url);await stmt(db,'UPDATE dots SET webhook_url=? WHERE id=?',url,d.id).run();return {saved:true};}
 if(n==='read_discord'){
@@ -382,14 +382,15 @@ async function receiverManagement(request,env,account,actor){
  if(request.method==='GET'){
   const admin=account.role==='owner',allowed=new Set(configuredAccounts(env).map(row=>row.email));
   const rows=(await stmt(env.DB,'SELECT rc.id,rc.name,rc.created,rc.expires,rc.owner,a.email FROM receiver_credentials rc JOIN accounts a ON a.user_id=rc.owner WHERE a.enabled=1 AND length(a.user_id)>0 AND (?=1 OR rc.owner=?) ORDER BY rc.created DESC,rc.id',admin?1:0,account.user_id).all()).results.filter(row=>allowed.has(row.email));
-  return json({receivers:rows.map(row=>({id:row.id,name:row.name,created:row.created,expires:row.expires,recipient:{email:row.email,is_self:row.owner===account.user_id},can_revoke:row.owner===account.user_id}))});
+  return json({receivers:rows.map(row=>({id:row.id,name:row.name,created:row.created,expires:row.expires,recipient:{email:row.email,is_self:row.owner===account.user_id},can_revoke:admin}))});
  }
  sameOrigin(request);const a=await readJSON(request,2000);
  if(request.method==='DELETE'){
+  if(account.role!=='owner')throw error('Only the admin can revoke receiver credentials.',-32001);
   if(Object.keys(a).some(k=>k!=='id'))throw error('Unexpected argument.');const id=text(a.id,100);
-  if(!await stmt(env.DB,'SELECT id FROM receiver_credentials WHERE id=? AND owner=?',id,account.user_id).first())throw error('Receiver not found.',-32001);
+  const target=await stmt(env.DB,'SELECT id,owner FROM receiver_credentials WHERE id=?',id).first();if(!target)throw error('Receiver not found.',-32001);
   await securityAudit(env,actor,'receiver_revoke','attempt',id);
-  await env.DB.batch([stmt(env.DB,'DELETE FROM receiver_credentials WHERE id=? AND owner=?',id,account.user_id),stmt(env.DB,'DELETE FROM subscriptions WHERE receiver_id=? AND owner=?',id,account.user_id)]);
+  await env.DB.batch([stmt(env.DB,'DELETE FROM receiver_credentials WHERE id=? AND owner=?',id,target.owner),stmt(env.DB,'DELETE FROM subscriptions WHERE receiver_id=? AND owner=?',id,target.owner)]);
   await securityAudit(env,actor,'receiver_revoke','success',id);return json({deleted:true});
  }
  if(Object.keys(a).some(k=>!['name','expires_in_days','account_id'].includes(k)))throw error('Unexpected argument.');
@@ -413,7 +414,7 @@ async function receiverManagement(request,env,account,actor){
  const inserted=await stmt(env.DB,'INSERT INTO receiver_credentials (id,owner,name,secret_hash,created,expires) SELECT ?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM receiver_credentials WHERE owner=?)<20 RETURNING id',receiver.id,recipient.user_id,label,await hash(secret),receiver.created,receiver.expires,recipient.user_id).first();
  if(!inserted)throw error('Revoke an existing receiver before creating another.');
  let auditWarning=false;try{await securityAudit(env,actor,'receiver_create','success',auditResource);}catch{auditWarning=true;console.warn(JSON.stringify({event:'security_audit_unavailable',stage:'completion'}));}
- return json({receiver,secret,recipient:recipientInfo,...(auditWarning?{audit_warning:'audit_unavailable'}:{})},201);
+ return json({receiver:{...receiver,can_revoke:account.role==='owner'},secret,recipient:recipientInfo,...(auditWarning?{audit_warning:'audit_unavailable'}:{})},201);
 }
 async function receiverRequest(request,env){
  if(request.method!=='POST')return json({error:'POST required'},405);
@@ -442,11 +443,13 @@ async function tokenManagement(request,env,account,actor){
  if(!['GET','POST','DELETE'].includes(request.method))return json({error:'Method not allowed'},405);
  if(request.method!=='GET')sameOrigin(request);
  const owner=account.role==='owner';
- if(request.method==='GET')return json({tokens:(await stmt(env.DB,'SELECT id,name,prefix,created,expires,dot FROM api_tokens WHERE (?=1 OR owner=?) ORDER BY created DESC,id',owner?1:0,account.user_id).all()).results});
+ if(request.method==='GET')return json({tokens:(await stmt(env.DB,'SELECT id,name,prefix,created,expires,dot FROM api_tokens WHERE (?=1 OR owner=?) ORDER BY created DESC,id',owner?1:0,account.user_id).all()).results.map(row=>({...row,can_revoke:owner}))});
  const a=await readJSON(request,2000);
  if(request.method==='DELETE'){
+  if(!owner)throw error('Only the admin can revoke tokens.',-32001);
+  if(Object.keys(a).some(k=>k!=='id'))throw error('Unexpected argument.');
   const id=text(a.id,100);const row=await stmt(env.DB,'SELECT owner FROM api_tokens WHERE id=?',id).first();
-  if(!row||!owner&&row.owner!==account.user_id)throw error('Token not found.',-32001);
+  if(!row)throw error('Token not found.',-32001);
   await securityAudit(env,actor,'token_revoke','attempt',id);
   await stmt(env.DB,'DELETE FROM api_tokens WHERE id=?',id).run();
   await securityAudit(env,actor,'token_revoke','success',id);return json({deleted:true});
@@ -461,7 +464,7 @@ async function tokenManagement(request,env,account,actor){
  await securityAudit(env,actor,'token_create','attempt',token.id);
  const inserted=await stmt(env.DB,'INSERT INTO api_tokens (id,name,prefix,token_hash,created,owner,expires,dot) SELECT ?,?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM api_tokens WHERE owner=?)<100 RETURNING id',token.id,token.name,token.prefix,await hash(secret),token.created,account.user_id,token.expires,dot,account.user_id).first();
  if(!inserted)throw error('Revoke an existing token before creating another.');
- await securityAudit(env,actor,'token_create','success',token.id);return json({token,secret},201);
+ await securityAudit(env,actor,'token_create','success',token.id);return json({token:{...token,can_revoke:owner},secret},201);
 }
 function randomSecret(){return btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'');}
 async function invitationManagement(request,env,account,actor){

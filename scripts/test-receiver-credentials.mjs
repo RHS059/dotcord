@@ -7,7 +7,7 @@ import companion from '../receiver/worker/index.js';
 const sql=new DatabaseSync(':memory:');
 for(const file of readdirSync('drizzle').filter(f=>f.endsWith('.sql')).sort())sql.exec(readFileSync('drizzle/'+file,'utf8').replaceAll('--> statement-breakpoint',''));
 const DB={async batch(items){sql.exec('BEGIN');try{const out=[];for(const item of items)out.push(await item.run());sql.exec('COMMIT');return out;}catch(e){sql.exec('ROLLBACK');throw e;}},prepare(query){return {bind(...args){return {first:async()=>sql.prepare(query).get(...args)||null,all:async()=>({results:sql.prepare(query).all(...args)}),run:async()=>({meta:{changes:sql.prepare(query).run(...args).changes}})}}}}};
-const env={DB,AUTHORIZED_ACCOUNTS:JSON.stringify(['alpha','beta'].map(id=>({email:id+'@example.test',role:'member'})))};
+const env={DB,AUTHORIZED_ACCOUNTS:JSON.stringify(['alpha','beta'].map(id=>({email:id+'@example.test',role:id==='alpha'?'owner':'member'})))};
 for(const id of ['alpha','beta'])sql.prepare('INSERT INTO accounts (email,user_id,role,enabled) VALUES (?,?,?,1)').run(id+'@example.test',id,'member');
 sql.prepare('INSERT INTO discords (id,owner,name,connection_url,guild_id,channel_id,bot_token) VALUES (?,?,?,?,?,?,?)').run('shared','alpha','Shared','','123456789012345678','234567890123456789','synthetic_bot_token');
 const secret='whsec_'+Buffer.alloc(32,8).toString('base64');
@@ -66,13 +66,13 @@ try{
  // Even a due cleanup must not mutate credentials during this read.
  sql.prepare("UPDATE security_maintenance SET next_run=0 WHERE id='cleanup'").run();
  const ownerList=(await (await management('alpha','GET')).json()).receivers;
- assert.deepEqual(ownerList.find(r=>r.id===selected.receiver.id),{...selected.receiver,recipient:{email:'beta@example.test',is_self:false},can_revoke:false});
+ assert.deepEqual(ownerList.find(r=>r.id===selected.receiver.id),{...selected.receiver,recipient:{email:'beta@example.test',is_self:false},can_revoke:true});
  assert.ok(ownerList.some(r=>r.recipient.is_self&&r.can_revoke));
  assert.deepEqual(sql.prepare('SELECT * FROM receiver_credentials ORDER BY id').all(),beforeList);
  assert.ok(!JSON.stringify(ownerList).includes(selected.secret));
  for(const row of ownerList){assert.deepEqual(Object.keys(row).sort(),['can_revoke','created','expires','id','name','recipient']);assert.deepEqual(Object.keys(row.recipient).sort(),['email','is_self']);}
  const memberList=(await (await management('beta','GET')).json()).receivers;
- assert.ok(memberList.every(r=>r.recipient.email==='beta@example.test'&&r.can_revoke));
+ assert.ok(memberList.every(r=>r.recipient.email==='beta@example.test'&&!r.can_revoke));
  // Orphaned, uninitialized, disabled, and removed accounts are never admin-list recipients.
  for(const [email,userId] of [['outside@example.test','outside'],['new@example.test',null],['empty@example.test','']]){
   sql.prepare('INSERT OR IGNORE INTO accounts (email,user_id,role,enabled) VALUES (?,?,?,1)').run(email,userId,'member');
@@ -85,7 +85,7 @@ try{
  const configured=env.AUTHORIZED_ACCOUNTS;env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'alpha@example.test',role:'owner'}]);
  assert.ok(!(await (await management('alpha','GET')).json()).receivers.some(r=>r.id===selected.receiver.id));env.AUTHORIZED_ACCOUNTS=configured;
  assert.ok((await (await management('beta','GET')).json()).receivers.some(r=>r.id===selected.receiver.id));
- assert.equal((await management('alpha','DELETE',{id:selected.receiver.id})).status,403);
+ assert.equal((await management('beta','DELETE',{id:selected.receiver.id})).status,403);
  const audit=sql.prepare("SELECT actor,resource FROM security_audit WHERE action='receiver_create' AND outcome='success' AND resource LIKE ?").get(selected.receiver.id+'%');
  assert.equal(audit.actor,'account:'+await digest('alpha'));assert.equal(audit.resource,selected.receiver.id+':account:'+betaId);assert.ok(!JSON.stringify(audit).includes('@'));
  assert.equal((await receiver(selected.secret,'status')).result.account_binding,(await tool('beta','get_wake_status')).account_binding);
@@ -100,7 +100,11 @@ try{
  for(let i=1;i<20;i++)assert.equal((await management('alpha','POST',{name:'Target limit '+i,account_id:betaId})).status,201);
  assert.equal((await management('alpha','POST',{name:'Target full',account_id:betaId})).status,400);
  assert.equal((await management('alpha','POST',{name:'Issuer not full'})).status,201);
- assert.equal((await management('beta','DELETE',{id:selected.receiver.id})).status,200);
+ await receiver(selected.secret,'subscribe',params);
+ const untouched=await (await management('alpha','POST',{name:'Keep this receiver'})).json();
+ assert.equal((await management('alpha','DELETE',{id:selected.receiver.id})).status,200);
+ assert.equal(sql.prepare('SELECT id FROM subscriptions WHERE receiver_id=?').get(selected.receiver.id),undefined);
+ assert.ok(sql.prepare('SELECT id FROM receiver_credentials WHERE id=?').get(untouched.receiver.id));
  env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'alpha@example.test',role:'member'},{email:'beta@example.test',role:'member'}]);assert.equal((await management('alpha','POST',{name:'Demoted issuer',account_id:betaId})).status,403);
  const fourth=await (await management('alpha','POST',{name:'Current access'})).json();env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'beta@example.test',role:'member'}]);assert.equal((await receiver(fourth.secret,'status')).status,401);
  console.log('PASS: receiver credential issuance, hash-only storage, owner isolation, restricted authority, namespace isolation, mention delivery, expiry/revocation/readiness, in-flight revocation, current allowlist. Synthetic callbacks only.');

@@ -45,6 +45,11 @@ try{
  assert.equal((await req('/api/tokens',{id:'legacy'},{who:'member',method:'DELETE'})).status,403);
  const destination=(await tool('add_discord',{name:'Test channel',channel_url:'https://discord.com/channels/123456789012345678/234567890123456789',bot_token:'synthetic_bot_token_1234567890'})).data;
  for(const dot_id of ['target','second'])assert.equal((await tool('register_dot',{dot_id,discord_id:destination.id},{who:'receiver'})).status,200);
+ const scoped=(await req('/api/tokens',{name:'Scoped',dot_id:'target'},{who:'receiver'})).data.token;
+ assert.equal((await tool('delete_agent',{dot_id:'target'},{who:'receiver'})).status,403);
+ assert.ok(sql.prepare('SELECT id FROM api_tokens WHERE id=?').get(scoped.id));
+ assert.equal((await req('/api/tokens',{id:scoped.id},{who:'receiver',method:'DELETE'})).status,403);
+ assert.equal((await req('/api/tokens',{id:scoped.id},{method:'DELETE'})).status,200);
  for(const dot of ['target','second'])sql.prepare('INSERT INTO subscriptions (id,owner,dot,url,secret,expires) VALUES (?,?,?,?,?,?)').run('sub_'+dot,'receiver',dot,'https://chatgpt.com/mock/'+dot,'whsec_'+Buffer.alloc(32,5).toString('base64'),'2099-01-01');
  const first=await wake(secret);assert.equal(first.status,200);assert.equal(first.data.results[0].status,'accepted');assert.equal(callbacks,1);
  assert.equal((await wake(token2)).status,429,'A second credential cannot bypass recipient cooldown');
@@ -78,7 +83,10 @@ try{
  assert.equal((await req('/api/accounts',{account_id:receiverId,enabled:true})).status,200);
  env.AUTHORIZED_ACCOUNTS=JSON.stringify(accounts.filter(a=>a.email!=='receiver@example.test'));assert.equal((await wake(secret)).data.results[0].status,'inactive');env.AUTHORIZED_ACCOUNTS=JSON.stringify(accounts);
  assert.equal((await req('/api/accounts',{account_id:digest('owner@example.test'),enabled:false})).status,400,'Cannot disable owner');
- assert.equal((await req('/api/tokens',{id:issue.data.token.id},{who:'member',method:'DELETE'})).status,200);assert.equal((await wake(secret)).status,401);
+ assert.equal((await req('/api/tokens',{id:issue.data.token.id},{who:'member',method:'DELETE'})).status,403);
+ assert.equal((await req('/api/tokens',null,{who:'member'})).data.tokens[0].can_revoke,false);
+ assert.ok((await req('/api/tokens')).data.tokens.every(token=>token.can_revoke));
+ assert.equal((await req('/api/tokens',{id:issue.data.token.id},{method:'DELETE'})).status,200);assert.equal((await wake(secret)).status,401);
  const exp=(await req('/api/tokens',{name:'Expires',expires_in_days:1})).data;time=Date.parse(exp.token.expires);assert.equal((await wake(exp.secret)).status,401,'Expiry enforced at exact boundary');
  // Legacy credentials remain usable only for wakes during their bounded migration window.
  time=RealDate.now();sql.exec('DELETE FROM wake_limits');assert.equal((await wake(legacy)).status,200);assert.equal((await req('/api/accounts',null,{token:legacy})).status,403);

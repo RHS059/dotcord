@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 const html = readFileSync('client-build/index.html', 'utf8');
 const script = html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/)[1];
 const fakeSecret = 'a1B2_fake_test_token_only_1234567890';
-let rows = [{id:'existing',name:'Existing integration',prefix:'z9Y8',created:1791620000000,expires:'2099-01-01T00:00:00.000Z'}];
-let dom, w, creates = 0, deletes = 0, copied = '', failCreate = false, failDelete = false, expectedDot = '';
+let rows = [{id:'existing',name:'Existing integration',prefix:'z9Y8',created:1791620000000,expires:'2099-01-01T00:00:00.000Z',can_revoke:true}];
+let dom, w, creates = 0, deletes = 0, copied = '', failCreate = false, failDelete = false, expectedDot = '', adminMode = true;
 async function until(fn) {for(let i=0;i<200;i++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('Token UI condition timed out');}
 const btn = text => [...w.document.querySelectorAll('button')].find(b=>b.textContent.trim()===text);
 const click = element => {assert.ok(element);element.dispatchEvent(new w.MouseEvent('click',{bubbles:true}));};
@@ -24,14 +24,14 @@ async function boot(unauthorized=false) {
      creates++;assert.deepEqual(JSON.parse(options.body),{name:'New integration',expires_in_days:30,...(expectedDot?{dot_id:expectedDot}:{})});
      if(failCreate)return Response.json({error:'Creation rejected.'},{status:400});
      await new Promise(r=>setTimeout(r,30));
-     const token={dot:expectedDot||null,id:'new',name:'New integration',prefix:fakeSecret.slice(0,4),created:1791620000000,expires:'2099-01-01T00:00:00.000Z'};rows=[token,...rows];return Response.json({token,secret:fakeSecret});
+     const token={dot:expectedDot||null,id:'new',name:'New integration',prefix:fakeSecret.slice(0,4),created:1791620000000,expires:'2099-01-01T00:00:00.000Z',can_revoke:true};rows=[token,...rows];return Response.json({token,secret:fakeSecret});
    }
    if(options.method==='DELETE'){
      deletes++;assert.deepEqual(JSON.parse(options.body),{id:'new'});
      if(failDelete)return Response.json({error:'Revoke rejected.'},{status:400});
      rows=rows.filter(t=>t.id!=='new');return Response.json({deleted:true});
    }
-   return Response.json({tokens:rows});
+   return Response.json({tokens:rows.map(row=>({...row,can_revoke:adminMode}))});
  };
  w.eval(script);await until(()=>w.document.querySelector('h1')&&!w.document.body.textContent.includes('Loading…'));
 }
@@ -65,5 +65,6 @@ w.history.pushState({},'','?tab=tokens');w.dispatchEvent(new w.PopStateEvent('po
 rows=rows.filter(t=>t.id!=='new');await boot();click(btn('Create Token'));await until(()=>w.document.querySelector('#token-scope'));
 assert.deepEqual([...w.document.querySelector('#token-scope').options].map(o=>o.value),['','sample']);assert.equal(w.document.querySelector('#token-scope').value,'');
 expectedDot='sample';w.document.querySelector('#token-scope').value='sample';w.document.querySelector('#token-scope').dispatchEvent(new w.Event('change',{bubbles:true}));input('#token-name','New integration');await new Promise(r=>setTimeout(r,0));click(w.document.querySelector('[role=dialog] button[type=submit]'));await until(()=>w.document.querySelector('#new-token-secret'));click(btn('Done'));await until(()=>!w.document.querySelector('[role=dialog]'));assert.ok(w.document.querySelector('table').textContent.includes('@sample · same channel'));assert.ok(w.document.querySelector('table').textContent.includes('All recipients'));expectedDot='';
+adminMode=false;await boot();assert.equal(w.document.querySelector('[aria-label^="Revoke token"]'),null);
 await boot(true);await until(()=>w.document.querySelector('a[href="/signin-with-chatgpt?return_to=%2F"]'));assert.ok(btn('Create Token').disabled);
 dom.window.close();console.log('PASS: token UI listing, first-four masking, create failure/retry, duplicate-submit lock, one-time copy, close/reopen clearing, revoke cancel/failure/retry, other-token preservation, history navigation and in-flight response secret clearing, client download and safe example copy, and unauthenticated sign-in link. API mocked.');
