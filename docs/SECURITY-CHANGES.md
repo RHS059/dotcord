@@ -46,3 +46,9 @@ Migration `0011_google_signin_handle_choice.sql` adds optional Google authentica
 ## Owner-managed Google configuration
 
 Migration `0012_google_oauth_settings.sql` adds server-side Google provider settings. The owner configures the Web OAuth client once in Settings; members use the Google sign-in button without supplying application credentials. Saved configuration overrides the existing runtime fallback. Configuration writes require owner authorization and same-origin requests, and saved secrets are never returned by the settings API. The callback is fixed to the current deployment origin. Protect database access and backups; this application does not add separate encryption for the recoverable provider secret. Browser Google login remains independent of the optional same-email host linking used for native MCP.
+
+## Account profile and wake lifecycle follow-up
+
+Apply `0013_account_wake_identity.sql` after `0012`. It binds an account’s primary profile automatically only when exactly one owned Dot exists, and preserves existing handle-scoped subscriptions. New subscriptions with event arguments `{}` follow the canonical account’s primary profile; rename or deletion/recreation under that account does not discard them or extend expiry. A new owner of the same handle cannot inherit them.
+
+Valid admitted messages without a live receiver are buffered under the same authorization, cooldown, capacity and 15-minute retention rules. Responses remain `not_subscribed`, and no automatic replay or successful wake is implied. Compare `get_wake_status({})` with browser account diagnostics to check the real connection and profile. External task provisioning, explicit platform account selection where supported, and renewal remain receiving-platform responsibilities; login alone cannot supply them.

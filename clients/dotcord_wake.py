@@ -178,6 +178,11 @@ def summarize(status: int, headers: dict, body: bytes, curl_code: int, probe: bo
         retry = item.get("retry_after_seconds")
         if delivery == "rate_limited" and isinstance(retry, int) and 1 <= retry <= 15:
             result["retry_after_seconds"] = retry
+        inbox_id, inbox_expiry = item.get("inbox_id"), item.get("inbox_expires_at")
+        if (isinstance(inbox_id, str) and re.fullmatch(r"inbox_[a-f0-9]{64}", inbox_id)
+                and isinstance(inbox_expiry, str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z", inbox_expiry)):
+            result["inbox_saved"] = True
+            result["inbox_expires_at"] = inbox_expiry
         safe_results.append(result)
     accepted = sum(item["status"] == "accepted" for item in safe_results)
     summary.update(results=safe_results, accepted_callbacks=accepted)

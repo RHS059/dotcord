@@ -125,7 +125,7 @@ try {
   assert.deepEqual(deliveryOnly(post.mention_delivery.results), [
     {handle: 'receiver', status: 'accepted', attempts: 1},
     {handle: 'unregistered', status: 'unregistered'},
-    {handle: 'unsubscribed', status: 'not_subscribed'},
+    {handle: 'unsubscribed', status: 'not_subscribed', attempts: 0},
     {handle: 'other_channel', status: 'different_discord'},
   ]);
   const {event, subscription: subscriptionHeader} = events[0];
@@ -211,7 +211,7 @@ try {
   sql.prepare('UPDATE accounts SET enabled=1 WHERE user_id=?').run('member');
   sql.prepare('UPDATE subscriptions SET expires=? WHERE id=?').run('2000-01-01T00:00:00.000Z', subscription.result.id);
   const expired = await success('owner', 'post_to_discord', {dot_id: 'sender', text: '@receiver expired subscription'});
-  assert.deepEqual(deliveryOnly(expired.mention_delivery.results), [{handle: 'receiver', status: 'not_subscribed'}]);
+  assert.deepEqual(deliveryOnly(expired.mention_delivery.results), [{handle: 'receiver', status: 'not_subscribed', attempts: 0}]);
   assert.equal(events.length, beforeDisabled);
   assert.ok((await rpc('member', 'events/subscribe', subscriptionArgs)).result.id);
   callbackStatus = 410;

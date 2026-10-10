@@ -110,6 +110,18 @@ class WakeClientTests(unittest.TestCase):
         self.assertFalse(summary["wake_verified"])
         self.assertIn("target agent's activity", summary["detail"])
 
+    def test_unsubscribed_inbox_receipt_is_not_a_wake(self):
+        receipt = {"handle": "receiver", "status": "not_subscribed", "attempts": 0,
+                   "inbox_id": "inbox_" + "a" * 64, "inbox_expires_at": "2026-10-10T20:15:00.000Z"}
+        summary, code = self.result([receipt])
+        self.assertEqual(code, 4)
+        self.assertEqual(summary["outcome"], "delivery_incomplete")
+        self.assertTrue(summary["results"][0]["inbox_saved"])
+        self.assertFalse(summary["wake_verified"])
+        summary, code = self.result([{**receipt, "inbox_expires_at": "untrusted-secret-text"}])
+        self.assertNotIn("inbox_saved", summary["results"][0])
+        self.assertNotIn("untrusted-secret-text", json.dumps(summary))
+
     def test_missing_failed_and_wrong_recipients(self):
         for result in ([], [{"handle": "other", "status": "accepted"}], *[[{"handle": "receiver", "status": status}] for status in ("not_subscribed", "unregistered", "different_discord", "inactive", "rejected", "gone", "transient", "oversized", "inbox_full", "inbox_unavailable", "message_conflict", "already_acknowledged")]):
             summary, code = self.result(result)

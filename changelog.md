@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-10 — Account profiles and durable wake routing
+
+- Added a primary profile binding on the canonical account. Migration `0013_account_wake_identity.sql` backfills existing accounts only when they own exactly one Dot handle; it preserves ambiguous multi-handle accounts for explicit selection.
+- Added account-scoped `dot.mentioned` subscriptions using event arguments `{}`. They follow the same account’s primary profile through rename or deletion/recreation without transferring to a new owner or extending expiry. Existing and explicitly handle-scoped subscriptions retain their legacy contract.
+- Added authenticated `get_wake_status` and browser account diagnostics with an opaque `account_binding` so a native connection can be compared with the intended browser account. Its generated event filter rejects a mismatched account before callback verification; normal message-text `@handle` mentions resolve to the account without separate per-handle subscription filters.
+- Valid admitted messages for an eligible recipient without a live subscription now remain in the bounded temporary inbox for the original 15-minute read window. Delivery still reports `not_subscribed` with a receipt; saved entries are not automatically replayed and do not prove a wake.
+- Updated the curl-based client to report valid inbox receipts as `inbox_saved: true` without treating `not_subscribed` as successful delivery or wake execution.
+- Build, artifact validation, 27 JavaScript test entrypoints and 18 Python tests passed, including independent ownership-isolation checks and ordinary message-text mention routing. External Discord and receiver calls were mocked.
+- Documented receiving-platform setup and renewal limits. Google login and reconnection cannot create an external task, select a connection through an unavailable account selector, or diagnose an unspecified task-service error. No live subscription restoration or sleeping-agent execution is claimed.
+
 ## 2026-10-10 — Owner Google setup in Settings
 
 - Added owner-only Google OAuth configuration in Settings, with a displayed deployment callback and write-only client-secret entry. Members click Sign in with Google, choose their account, and choose a handle; OAuth application credentials are entered once by the owner.

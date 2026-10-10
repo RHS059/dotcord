@@ -59,8 +59,24 @@ try{
  for(const recipients of [[],['recipient','recipient'],['Recipient'],['bad..name'],['recipient',null],Array(11).fill('recipient'),'recipient'])assert.ok((await call('send_mention',{message_id:'bad',text:'thread',recipients},'global','/api/wake')).value.error);
  assert.ok((await call('send_mention',{sender:'sender',message_id:'session',text:'thread',recipients:['recipient']},'owner','/api/wake')).value.error,'Session requests cannot use explicit wake-token routing');
  assert.equal((await wake({recipients:['unknown']})).results[0].status,'unregistered');
- assert.equal((await wake({recipients:['no_subscription']})).results[0].status,'not_subscribed');
- assert.equal((await wake({recipients:['disabled_dot']})).results[0].status,'inactive');
+ // Missing or expired subscriptions cannot discard authorized inbox content.
+ const offline=(await wake({message_id:'offline',recipients:['no_subscription']})).results[0];
+ assert.equal(offline.status,'not_subscribed');assert.equal(offline.attempts,0);assert.ok(offline.inbox_id);assert.equal(events.length,0);
+ const offlineMessage=await read(offline.inbox_id,'no_subscription');assert.equal(offlineMessage.text,'only the thread name');assert.deepEqual(offlineMessage.event_ids,[]);
+ const limited=await ok('send_mention',{message_id:'offline-limited',text:'extra',recipients:['no_subscription']},'global','/api/wake');assert.equal(limited.results[0].status,'rate_limited');assert.equal((await list('no_subscription')).messages.length,1);
+ assert.equal((await wake({message_id:'offline',recipients:['no_subscription']})).results[0].inbox_expires_at,offline.inbox_expires_at);
+ assert.equal((await wake({message_id:'offline',text:'changed',recipients:['no_subscription']})).results[0].status,'message_conflict');
+ sql.prepare('INSERT INTO subscriptions (id,owner,dot,url,secret,expires) VALUES (?,?,?,?,?,?)').run('sub_offline','receiver','no_subscription','https://chatgpt.com/mock/sub_offline',secret,'2026-01-01');
+ assert.equal((await wake({message_id:'expired-sub',recipients:['no_subscription']})).results[0].status,'not_subscribed');assert.equal(events.length,0);
+ // Restoring a real subscription does not replay automatically; an explicit retry
+ // retains first content/expiry and adds the real callback event ID.
+ sql.prepare('UPDATE subscriptions SET expires=? WHERE id=?').run('2099-01-01','sub_offline');
+ const restored=(await wake({message_id:'offline',recipients:['no_subscription']})).results[0];assert.equal(restored.status,'accepted');assert.equal(restored.inbox_id,offline.inbox_id);assert.equal(restored.inbox_expires_at,offline.inbox_expires_at);assert.equal((await read(offline.inbox_id,'no_subscription')).event_ids.length,1);
+ await ack(offline.inbox_id,'no_subscription');sql.prepare('DELETE FROM subscriptions WHERE id=?').run('sub_offline');
+ assert.equal((await wake({message_id:'offline',recipients:['no_subscription']})).results[0].status,'already_acknowledged');
+ sql.exec("DELETE FROM temporary_inbox WHERE dot='no_subscription'");events.length=0;
+ sql.prepare('DELETE FROM subscriptions WHERE dot=?').run('disabled_dot');
+ assert.equal((await wake({recipients:['disabled_dot']})).results[0].status,'inactive','Inactive recipients cannot receive offline inbox copies');
  assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM temporary_inbox').get().n,0);
  const exactText='  project thread / 中文\nkeep this exact  ',exactId='  exact|message-ID  ';
  const sent=await wake({message_id:exactId,text:exactText,sender:'forged',recipients:['recipient','second']});
@@ -110,6 +126,10 @@ try{
  await wake({message_id:'bounded-0',recipients:['another']});assert.equal((await list('another')).messages.length,100);
  const page=await list('another','receiver',20);assert.equal(page.messages.length,20);assert.equal(page.has_more,true);
  for(const m of page.messages)await ack(m.inbox_id,'another');assert.equal((await list('another')).messages.length,80);
+ // The same cap applies without subscriptions: no unbounded offline queue.
+ for(let i=0;i<100;i++)assert.equal((await wake({message_id:'offline-bounded-'+i,recipients:['no_subscription']})).results[0].status,'not_subscribed');
+ assert.equal((await wake({message_id:'offline-overflow',recipients:['no_subscription']})).results[0].status,'inbox_full');
+ assert.equal((await list('no_subscription')).messages.length,100);
  // Old handles must not leak content to new owners, including before delayed cleanup.
  const old=(await wake({message_id:'ownership-change'})).results[0].inbox_id;
  sql.prepare('UPDATE dots SET owner=? WHERE id=?').run('other','recipient');assert.equal((await list('recipient','other')).messages.length,0);

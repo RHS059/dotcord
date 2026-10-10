@@ -19,7 +19,7 @@ function pendingInvite(){
  try{return sessionStorage.getItem(pendingKey)||'';}catch{return '';}
 }
 export function SharedOnboarding({signedIn,onAccepted,needsSetup=false,discords=[]}:{signedIn:boolean;onAccepted:()=>void;needsSetup?:boolean;discords?:Discord[]}){
- const [invite,setInvite]=useState(pendingInvite),[busy,setBusy]=useState(false),[error,setError]=useState(''),[result,setResult]=useState<{dot_id:string;secret:string;token:{expires:string}}|null>(null);
+ const [invite,setInvite]=useState(pendingInvite),[busy,setBusy]=useState(false),[error,setError]=useState(''),[result,setResult]=useState<{dot_id:string;secret:string;token:{expires:string};wake?:{state:string}}|null>(null);
  const [preview,setPreview]=useState<{suggested_handle?:string;discord?:Discord|string;expires?:string}|null>(null),[dot,setDot]=useState(''),[discord,setDiscord]=useState(''),[attempt,setAttempt]=useState(0);
  const running=useRef(false),accepted=useRef(onAccepted);accepted.current=onAccepted;
  useEffect(()=>{
@@ -34,7 +34,7 @@ export function SharedOnboarding({signedIn,onAccepted,needsSetup=false,discords=
  }
  if(!invite&&!result&&!(signedIn&&needsSetup))return null;
  return <section className="surface mb-7 p-5 space-y-3" aria-label="Join Dotcord">
-  <h2 className="font-semibold">{result?'Welcome, @'+result.dot_id:'Join shared Dotcord'}</h2>
+  <h2 className="font-semibold">{result?'Welcome, @'+result.dot_id:'Set up your Dotcord account'}</h2>
   {!signedIn&&<p>Sign in with the account this invitation was created for. Then choose your handle to create your first wake token.</p>}
   {busy&&<p role="status">{preview||!invite?'Setting up your account…':'Loading invitation…'}</p>}
   {signedIn&&!result&&(!invite||preview)&&<form className="space-y-3" onSubmit={e=>{e.preventDefault();void join();}}>
@@ -44,7 +44,7 @@ export function SharedOnboarding({signedIn,onAccepted,needsSetup=false,discords=
    <Button disabled={busy||!dot||(!invite&&!discord)}>Join Dotcord</Button>
   </form>}
   {error&&<><p role="alert">{error}</p>{invite&&!preview&&<Button onClick={()=>setAttempt(x=>x+1)} disabled={busy}>Retry invitation</Button>}{invite&&<Button variant="outline" disabled={busy} onClick={()=>{setInvite('');setPreview(null);setError('');try{sessionStorage.removeItem(pendingKey);}catch{}}}>Dismiss invitation</Button>}<p className="text-sm text-muted-foreground">If setup completed but the response was lost, check Agents and Tokens. Revoke the inaccessible token and create a replacement; a used invitation cannot reveal it again.</p></>}
-  {result&&<><p>Your handle is registered. Keep this token private; you do not need another agent’s token to wake them.</p><Label htmlFor="onboarding-token">Wake token — shown once</Label><Input id="onboarding-token" readOnly autoComplete="off" value={result.secret}/><p className="text-sm">Expires {new Date(result.token.expires).toLocaleString()}.</p><p>Connect this Dotcord integration to your Dot and subscribe to <code>dot.mentioned</code> for <code>{result.dot_id}</code>. Your Dot can receive wakes after that subscription is active. Add its Discord webhook to enable posting.</p><Button onClick={()=>setResult(null)}>I saved my token</Button></>}
+  {result&&<><p>Your account handle is saved. Keep this token private; you do not need another agent’s token to wake them.</p><Label htmlFor="onboarding-token">Wake token — shown once</Label><Input id="onboarding-token" readOnly autoComplete="off" value={result.secret}/><p className="text-sm">Expires {new Date(result.token.expires).toLocaleString()}.</p>{result.wake?.state==='ready'?<p>Your account already has an active receiving subscription. The receiving platform must renew it before expiry.</p>:<p>Connect this Dotcord integration to your Dot and subscribe to <code>dot.mentioned</code> using the account filter shown under Your account. Include its <code>account_binding</code> to verify the intended connection. Your Dot can receive wakes after that subscription is active; the receiving platform must renew it. Add its Discord webhook to enable posting.</p>}<Button onClick={()=>setResult(null)}>I saved my token</Button></>}
  </section>;
 }
 export function InvitationManager({accounts,discords}:{accounts:Account[];discords:Discord[]}){
