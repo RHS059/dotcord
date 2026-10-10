@@ -106,16 +106,48 @@ async function wakeStatus(db,owner){
  const account=await stmt(db,'SELECT primary_dot FROM accounts WHERE user_id=?',owner).first();
  const profile=account?.primary_dot?await stmt(db,"SELECT d.id,c.id AS destination FROM dots d LEFT JOIN discords c ON c.id=d.discord_id WHERE d.id=? AND d.owner=? AND d.agent_type='dot'",account.primary_dot,owner).first():null;
  const choices=await stmt(db,"SELECT COUNT(*) n FROM dots WHERE owner=? AND agent_type='dot'",owner).first();
- const active=(await stmt(db,"SELECT scope,expires FROM subscriptions s WHERE owner=? AND expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>?)) AND ((scope='account' AND ? IS NOT NULL) OR (scope='handle' AND dot=?))",owner,now(),now(),profile?.id||null,profile?.id||null).all()).results;
- const accountSubs=(await stmt(db,"SELECT expires FROM subscriptions s WHERE owner=? AND scope='account' AND expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>?))",owner,now(),now()).all()).results;
+ const active=(await stmt(db,"SELECT scope,expires FROM subscriptions s WHERE owner=? AND expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>? AND (s.receiver_lineage IS NULL OR EXISTS (SELECT 1 FROM receiver_lineages l WHERE l.id=s.receiver_lineage AND l.owner=s.owner AND l.receiver_id=rc.id AND l.revision=s.receiver_revision)))) AND ((scope='account' AND ? IS NOT NULL) OR (scope='handle' AND dot=?))",owner,now(),now(),profile?.id||null,profile?.id||null).all()).results;
+ const accountSubs=(await stmt(db,"SELECT expires FROM subscriptions s WHERE owner=? AND scope='account' AND expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>? AND (s.receiver_lineage IS NULL OR EXISTS (SELECT 1 FROM receiver_lineages l WHERE l.id=s.receiver_lineage AND l.owner=s.owner AND l.receiver_id=rc.id AND l.revision=s.receiver_revision))))",owner,now(),now()).all()).results;
  return {dot_id:profile?.id||null,selection_required:!profile&&choices.n>0,account_binding:'acct_'+await hash(owner),state:!profile?(choices.n?'selection_required':'profile_required'):(!profile.destination?'destination_required':active.length?'ready':'not_subscribed'),active_subscriptions:active.length,account_subscriptions:accountSubs.length,refresh_before:active.length?active.map(s=>s.expires).sort()[0]:(accountSubs.length?accountSubs.map(s=>s.expires).sort()[0]:null),subscription_required:!active.length,event:EVENT,filter:{account_binding:'acct_'+await hash(owner)}};
 }
-async function subscribe(db,owner,p,env,receiver=null){console.info(JSON.stringify({event:'subscription_request',callback_origin:(()=>{try{return new URL(p.delivery?.url).origin;}catch{return 'invalid';}})(),delivery_mode:p.delivery?.mode||null}));if(p.name!==EVENT)throw error('Unknown event.');const {dot,scope}=await subscriptionFilter(db,owner,p.arguments);if(p.delivery?.mode!=='webhook'||p.cursor!=null)throw error('Only webhook delivery without replay is supported.');const url=callbackURL(p.delivery.url,env);keyBytes(p.delivery.secret);if(p.ttlMs!==undefined&&p.ttlMs!==null&&(!Number.isSafeInteger(p.ttlMs)||p.ttlMs<60000))throw error('ttlMs must be at least 60000.');const expires=new Date(Math.min(Date.now()+Math.min(p.ttlMs??604800000,604800000),receiver?Date.parse(receiver.expires):Infinity)).toISOString();const id='sub_'+await hash(JSON.stringify(receiver?[owner,url,EVENT,{scope:'account',receiver:receiver.id}]:scope==='handle'?[owner,url,EVENT,dot]:[owner,url,EVENT,{scope:'account'}]));const sub={id,url,secret:p.delivery.secret};const challenge=crypto.randomUUID();try{const r=await callback(env,sub,'verify_'+crypto.randomUUID(),{type:'verification',challenge});console.info(JSON.stringify({event:'callback_verification',status:r.status}));if(!r.ok||!equal((await r.json()).challenge,challenge))throw 0;}catch(e){console.warn(JSON.stringify({event:'callback_verification_failed',stage:e?.callbackStage||'response',category:e?.callbackCategory||'challenge_failed'}));throw error('Callback verification failed.',-32015,e?.reason==='timeout'?'timeout':'challenge_failed');}const saved=await stmt(db,'INSERT INTO subscriptions (id,owner,dot,url,secret,expires,scope,receiver_id) SELECT ?,?,?,?,?,?,?,? WHERE (? IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials WHERE id=? AND owner=? AND expires>?)) ON CONFLICT(id) DO UPDATE SET secret=excluded.secret,expires=excluded.expires',id,owner,dot,url,sub.secret,expires,scope,receiver?.id||null,receiver?.id||null,receiver?.id||null,owner,now()).run();if(receiver&&!saved.meta?.changes)throw error('Invalid, expired or revoked receiver credential.',-32001);return {id,refreshBefore:expires,cursor:null,truncated:false};}
+// A lineage proof is a private receiver identity, never bearer authorization.
+// Every mutation also requires the live account-bound credential and exact revision.
+function receiverFence(receiver){
+ return {sql:'EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=? AND rc.owner=? AND rc.expires>?) AND ((? IS NULL AND NOT EXISTS (SELECT 1 FROM receiver_lineages l WHERE l.owner=? AND l.receiver_id=?)) OR EXISTS (SELECT 1 FROM receiver_lineages l WHERE l.id=? AND l.owner=? AND l.receiver_id=? AND l.revision=?))',args:[receiver.id,receiver.owner,now(),receiver.lineage_id||null,receiver.owner,receiver.id,receiver.lineage_id||null,receiver.owner,receiver.id,receiver.revision||0]};
+}
+async function currentReceiver(db,receiver){
+ const fence=receiverFence(receiver);
+ if(await stmt(db,'SELECT 1 AS valid WHERE '+fence.sql,...fence.args).first())return;
+ if(!await stmt(db,'SELECT id FROM receiver_credentials WHERE id=? AND owner=? AND expires>?',receiver.id,receiver.owner,now()).first())throw error('Invalid, expired or revoked receiver credential.',-32001);
+ throw error('Receiver binding changed. Retry through the current receiver pairing.',-32009);
+}
+async function subscribe(db,owner,p,env,receiver=null){
+ console.info(JSON.stringify({event:'subscription_request',callback_origin:(()=>{try{return new URL(p.delivery?.url).origin;}catch{return 'invalid';}})(),delivery_mode:p.delivery?.mode||null}));
+ if(p.name!==EVENT)throw error('Unknown event.');
+ const {dot,scope}=await subscriptionFilter(db,owner,p.arguments);
+ if(p.delivery?.mode!=='webhook'||p.cursor!=null)throw error('Only webhook delivery without replay is supported.');
+ const url=callbackURL(p.delivery.url,env);keyBytes(p.delivery.secret);
+ if(p.ttlMs!==undefined&&p.ttlMs!==null&&(!Number.isSafeInteger(p.ttlMs)||p.ttlMs<60000))throw error('ttlMs must be at least 60000.');
+ // Registration lifetime is the platform's requested lease; token authorization
+ // is checked separately on every delivery. Rotation never extends this lease.
+ const expires=new Date(Date.now()+Math.min(p.ttlMs??604800000,604800000)).toISOString();
+ const previous=receiver?await stmt(db,'SELECT id,receiver_id,receiver_revision,receiver_lineage FROM subscriptions WHERE owner=? AND receiver_id IS NOT NULL AND url=? AND expires>? ORDER BY id LIMIT 1',owner,url,now()).first():null;
+ if(previous&&(previous.receiver_id!==receiver.id||previous.receiver_revision>(receiver.revision||0)||(previous.receiver_lineage||null)!==(receiver.lineage_id||null)))throw error('Receiver binding changed. Retry through the current receiver pairing.',-32009);
+ const id=previous?.id||'sub_'+await hash(JSON.stringify(receiver?[owner,url,EVENT,{scope:'account',receiver:receiver.id}]:scope==='handle'?[owner,url,EVENT,dot]:[owner,url,EVENT,{scope:'account'}]));
+ const sub={id,url,secret:p.delivery.secret};const challenge=crypto.randomUUID();
+ try{const r=await callback(env,sub,'verify_'+crypto.randomUUID(),{type:'verification',challenge});console.info(JSON.stringify({event:'callback_verification',status:r.status}));if(!r.ok||!equal((await r.json()).challenge,challenge))throw 0;}
+ catch(e){console.warn(JSON.stringify({event:'callback_verification_failed',stage:e?.callbackStage||'response',category:e?.callbackCategory||'challenge_failed'}));throw error('Callback verification failed.',-32015,e?.reason==='timeout'?'timeout':'challenge_failed');}
+ const fence=receiver?receiverFence(receiver):{sql:'1',args:[]};
+ const saved=await stmt(db,`INSERT INTO subscriptions (id,owner,dot,url,secret,expires,scope,receiver_id,receiver_secret_hash,receiver_revision,receiver_lineage) SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE ${fence.sql} AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM subscriptions WHERE owner=? AND url=? AND receiver_id IS NOT NULL AND expires>? AND id<>?)) ON CONFLICT(id) DO UPDATE SET secret=excluded.secret,expires=excluded.expires,receiver_revision=excluded.receiver_revision WHERE subscriptions.owner=excluded.owner AND subscriptions.receiver_id IS excluded.receiver_id AND subscriptions.receiver_lineage IS excluded.receiver_lineage AND subscriptions.receiver_revision<=excluded.receiver_revision`,id,owner,dot,url,sub.secret,expires,scope,receiver?.id||null,receiver?.secret_hash||null,receiver?.revision||0,receiver?.lineage_id||null,...fence.args,receiver?.id||null,owner,url,now(),id).run();
+ if(receiver&&!saved.meta?.changes){await currentReceiver(db,receiver);throw error('Receiver binding changed. Retry through the current receiver pairing.',-32009);}
+
+ return {id,refreshBefore:expires,cursor:null,truncated:false};
+}
 async function deliver(db,env,sub,event){
   let status='transient';let attempts=0;
   for(;attempts<3;attempts++){
     // Recheck current registration ownership and subscription on each attempt.
-    const active=await stmt(db,'SELECT s.id FROM subscriptions s JOIN dots d ON d.id=? AND s.owner=d.owner JOIN accounts a ON a.user_id=d.owner WHERE s.id=? AND s.expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>?)) AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND a.primary_dot=d.id))',event.data.dot_id,sub.id,now(),now()).first();
+    const active=await stmt(db,'SELECT s.id FROM subscriptions s JOIN dots d ON d.id=? AND s.owner=d.owner JOIN accounts a ON a.user_id=d.owner WHERE s.id=? AND s.expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>? AND (s.receiver_lineage IS NULL OR EXISTS (SELECT 1 FROM receiver_lineages l WHERE l.id=s.receiver_lineage AND l.owner=s.owner AND l.receiver_id=rc.id AND l.revision=s.receiver_revision)))) AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND a.primary_dot=d.id))',event.data.dot_id,sub.id,now(),now()).first();
     if(!active)return {status:'inactive',attempts};if(!await accountActive(env,sub.owner))return {status:'inactive',attempts};
     try{const r=await callback(env,sub,event.eventId,event);status=r.ok?'accepted':r.status===410?'gone':r.status===413?'oversized':r.status===429||r.status>=500?'transient':'rejected';}catch{status='transient';}
     if(status==='gone')await stmt(db,'DELETE FROM subscriptions WHERE id=?',sub.id).run();
@@ -190,7 +222,7 @@ if(message.channel_id!==target)return {sent:true,message_id:message.id,channel_i
 const source='https://discord.com/channels/'+c.guild_id+'/'+message.channel_id+'/'+message.id;let mention_delivery;try{mention_delivery=await tool(db,owner,'send_mention',{sender:d.id,message_id:message.id,text:content,source_url:source},env,origin,{guild_id:c.guild_id,parent_id:c.channel_id,thread_id:target,agent:d},auditState);}catch{mention_delivery={error:'Post sent; mention delivery failed. Do not repost.'};}return {sent:true,message_id:message.id,url:source,mention_delivery};}
 if(n==='set_discord'){await owned(db,a.dot_id,owner,admin);const conn=await stmt(db,'SELECT id FROM discords WHERE id=?',text(a.discord_id,100)).first();if(!conn)throw error('Select a configured Discord connection.');await stmt(db,'UPDATE dots SET discord_id=? WHERE id=?',conn.id,name(a.dot_id)).run();return {dot_id:name(a.dot_id),discord_id:conn.id};}
 if(n==='register_dot'){const id=name(a.dot_id);const type=a.agent_type||'dot';if(!['dot','agent'].includes(type))throw error('Choose Dot or Non-Dot Agent.');const connection=await stmt(db,'SELECT * FROM discords WHERE id=?',text(a.discord_id,100)).first();if(!connection)throw error('Select a configured Discord connection.');const existing=await stmt(db,'SELECT owner,agent_type FROM dots WHERE id=?',id).first();if(existing&&!admin&&existing.owner!==owner)throw error('This handle belongs to another account.',-32001);if(existing&&existing.agent_type!==type)throw error('This handle is already registered in the other category.');const webhook=a.webhook_url?parseWebhook(a.webhook_url):null;await db.batch([stmt(db,'INSERT INTO dots (id,owner,created,agent_type,discord_id,webhook_url) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET discord_id=excluded.discord_id,webhook_url=COALESCE(excluded.webhook_url,dots.webhook_url) WHERE dots.owner=excluded.owner AND dots.agent_type=excluded.agent_type',id,existing?.owner||owner,now(),type,connection.id,webhook),stmt(db,"UPDATE accounts SET primary_dot=? WHERE user_id=? AND primary_dot IS NULL AND EXISTS (SELECT 1 FROM dots WHERE id=? AND owner=? AND agent_type='dot') AND (SELECT COUNT(*) FROM dots WHERE owner=? AND agent_type='dot')=1",id,existing?.owner||owner,id,existing?.owner||owner,existing?.owner||owner)]);await owned(db,id,owner,admin);const status=await wakeStatus(db,existing?.owner||owner);return {dot_id:id,agent_type:type,registered:true,event:EVENT,filter:status.dot_id===id?status.filter:{dot_id:id,account_binding:status.account_binding}};}
-if(n==='list_dots')return (await stmt(db,'SELECT d.id AS dot_id,d.agent_type,d.discord_id,(d.owner=?) AS is_owned,(d.webhook_url IS NOT NULL) AS webhook_configured,(?=1 OR d.owner=?) AS can_manage,(SELECT COUNT(*) FROM subscriptions s WHERE s.owner=d.owner AND s.expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>?)) AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND EXISTS (SELECT 1 FROM accounts a WHERE a.user_id=d.owner AND a.primary_dot=d.id)))) AS subscriptions FROM dots d ORDER BY d.id',owner,admin?1:0,owner,now(),now()).all()).results;
+if(n==='list_dots')return (await stmt(db,'SELECT d.id AS dot_id,d.agent_type,d.discord_id,(d.owner=?) AS is_owned,(d.webhook_url IS NOT NULL) AS webhook_configured,(?=1 OR d.owner=?) AS can_manage,(SELECT COUNT(*) FROM subscriptions s WHERE s.owner=d.owner AND s.expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>? AND (s.receiver_lineage IS NULL OR EXISTS (SELECT 1 FROM receiver_lineages l WHERE l.id=s.receiver_lineage AND l.owner=s.owner AND l.receiver_id=rc.id AND l.revision=s.receiver_revision)))) AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND EXISTS (SELECT 1 FROM accounts a WHERE a.user_id=d.owner AND a.primary_dot=d.id)))) AS subscriptions FROM dots d ORDER BY d.id',owner,admin?1:0,owner,now(),now()).all()).results;
 if(n==='send_mention'){
 const sender=global?(globalToken.dot||globalToken.name):name(a.sender);
 // Unscoped wake tokens identify the saved label; scoped tokens identify their owned handle.
@@ -226,7 +258,7 @@ return {message_id:id,results};}
 throw error('Unknown tool.',-32601);}
 
 async function activeWakeSubscriptions(db,dot){
- return (await stmt(db,'SELECT s.* FROM subscriptions s JOIN dots d ON s.owner=d.owner JOIN accounts a ON a.user_id=d.owner WHERE d.id=? AND s.expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>?)) AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND a.primary_dot=d.id))',dot,now(),now()).all()).results;
+ return (await stmt(db,'SELECT s.* FROM subscriptions s JOIN dots d ON s.owner=d.owner JOIN accounts a ON a.user_id=d.owner WHERE d.id=? AND s.expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>? AND (s.receiver_lineage IS NULL OR EXISTS (SELECT 1 FROM receiver_lineages l WHERE l.id=s.receiver_lineage AND l.owner=s.owner AND l.receiver_id=rc.id AND l.revision=s.receiver_revision)))) AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND a.primary_dot=d.id))',dot,now(),now()).all()).results;
 }
 // This action uses the existing saved subscription, inbox, cooldown and signed
 // callback delivery. It never creates credentials/subscriptions or posts to Discord.
@@ -415,7 +447,7 @@ async function maintenance(env){
   stmt(env.DB,'DELETE FROM oauth_states WHERE id IN (SELECT id FROM oauth_states WHERE expires<=? LIMIT 100)',time),
   stmt(env.DB,'DELETE FROM auth_sessions WHERE id IN (SELECT id FROM auth_sessions WHERE expires<=? LIMIT 100)',time),
   stmt(env.DB,'DELETE FROM invitations WHERE id IN (SELECT id FROM invitations WHERE expires<=? LIMIT 500)',now()),
-  stmt(env.DB,'DELETE FROM subscriptions WHERE id IN (SELECT id FROM subscriptions WHERE expires<=? OR (receiver_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=subscriptions.receiver_id AND rc.expires>?)) LIMIT 500)',now(),now()),
+  stmt(env.DB,'DELETE FROM subscriptions WHERE id IN (SELECT id FROM subscriptions WHERE expires<=? LIMIT 500)',now()),
   stmt(env.DB,'DELETE FROM receiver_credentials WHERE id IN (SELECT id FROM receiver_credentials WHERE expires<=? LIMIT 100)',now()),
   stmt(env.DB,'DELETE FROM wake_tests WHERE id IN (SELECT id FROM wake_tests WHERE created<? LIMIT 500)',time-86400000)
  ]);
@@ -486,7 +518,8 @@ async function receiverManagement(request,env,account,actor){
   if(Object.keys(a).some(k=>k!=='id'))throw error('Unexpected argument.');const id=text(a.id,100);
   const target=await stmt(env.DB,'SELECT id,owner FROM receiver_credentials WHERE id=?',id).first();if(!target)throw error('Receiver not found.',-32001);
   await securityAudit(env,actor,'receiver_revoke','attempt',id);
-  await env.DB.batch([stmt(env.DB,'DELETE FROM receiver_credentials WHERE id=? AND owner=?',id,target.owner),stmt(env.DB,'DELETE FROM subscriptions WHERE receiver_id=? AND owner=?',id,target.owner)]);
+  // Keep the platform-authorized callback lease, but immediately remove its authorization.
+  await stmt(env.DB,'DELETE FROM receiver_credentials WHERE id=? AND owner=?',id,target.owner).run();
   await securityAudit(env,actor,'receiver_revoke','success',id);return json({deleted:true});
  }
  if(Object.keys(a).some(k=>!['name','expires_in_days','account_id'].includes(k)))throw error('Unexpected argument.');
@@ -516,20 +549,59 @@ async function receiverRequest(request,env){
  if(request.method!=='POST')return json({error:'POST required'},405);
  const match=/^Bearer (dcr_[A-Za-z0-9_-]{43})$/i.exec(request.headers.get('authorization')||'');
  if(!match)throw error('Invalid, expired or revoked receiver credential.',-32001);
- const receiver=await stmt(env.DB,'SELECT id,owner,expires FROM receiver_credentials WHERE secret_hash=? AND expires>?',await hash(match[1]),now()).first();
+ const receiver=await stmt(env.DB,'SELECT id,owner,expires,secret_hash FROM receiver_credentials WHERE secret_hash=? AND expires>?',await hash(match[1]),now()).first();
  if(!receiver||!await accountActive(env,receiver.owner))throw error('Invalid, expired or revoked receiver credential.',-32001);
  const actor='receiver:'+receiver.id;
  await maintenance(env);const a=await readJSON(request);
- if(Object.keys(a).some(k=>!['method','params'].includes(k))||!['status','subscribe','unsubscribe'].includes(a.method))throw error('Unsupported receiver operation.');
+ if(Object.keys(a).some(k=>!['method','params','revision','lineage'].includes(k))||!['status','subscribe','unsubscribe','restore'].includes(a.method))throw error('Unsupported receiver operation.');
+ if(a.revision!==undefined&&(!Number.isSafeInteger(a.revision)||a.revision<1))throw error('Invalid receiver revision.');
+ receiver.revision=a.revision||0;
+ if(a.lineage!==undefined&&(typeof a.lineage!=='string'||!/^[a-f0-9]{64}$/.test(a.lineage)||!receiver.revision))throw error('Invalid receiver lineage.');
+ receiver.lineage_id=a.lineage?await hash(a.lineage):null;
+ if(receiver.lineage_id&&a.method!=='restore')await currentReceiver(env.DB,receiver);
  await securityAudit(env,actor,'receiver_'+a.method,'attempt');
  try{
   let result;
-  if(a.method==='status'){if(a.params!==undefined&&(!a.params||typeof a.params!=='object'||Array.isArray(a.params)||Object.keys(a.params).length))throw error('Unexpected argument.');result=await wakeStatus(env.DB,receiver.owner);const rows=(await stmt(env.DB,'SELECT expires FROM subscriptions WHERE receiver_id=? AND owner=? AND expires>?',receiver.id,receiver.owner,now()).all()).results;result={...result,receiver_subscriptions:rows.length,receiver_ready:result.state==='ready'&&rows.length>0,receiver_refresh_before:rows.length?rows.map(r=>r.expires).sort()[0]:null};}
+  if(a.method==='status'){
+   if(a.params!==undefined&&(!a.params||typeof a.params!=='object'||Array.isArray(a.params)||Object.keys(a.params).length))throw error('Unexpected argument.');
+   result=await wakeStatus(env.DB,receiver.owner);
+   const rows=(await stmt(env.DB,'SELECT expires FROM subscriptions WHERE receiver_id=? AND owner=? AND expires>? AND (? IS NULL OR receiver_lineage=?)',receiver.id,receiver.owner,now(),receiver.lineage_id,receiver.lineage_id).all()).results;
+   result={...result,receiver_subscriptions:rows.length,receiver_ready:result.state==='ready'&&rows.length>0,receiver_refresh_before:rows.length?rows.map(r=>r.expires).sort()[0]:null};
+  }
+  else if(a.method==='restore'){
+   const p=a.params;
+   if(!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).length!==1||!receiver.lineage_id||!Array.isArray(p.previous_tokens)||p.previous_tokens.length>8||p.previous_tokens.some(t=>typeof t!=='string'||!/^dcr_[A-Za-z0-9_-]{43}$/.test(t)))throw error('Invalid receiver continuity proof.');
+   const existing=await stmt(env.DB,'SELECT owner,receiver_id,revision FROM receiver_lineages WHERE id=?',receiver.lineage_id).first();
+   if(existing&&(existing.owner!==receiver.owner||existing.revision>receiver.revision||existing.revision===receiver.revision&&existing.receiver_id!==receiver.id))throw error('Receiver binding changed. Retry through the current receiver pairing.',-32009);
+   // Legacy adoption is one-time and unambiguous. A shared token can never
+   // transfer another already-established receiver's callbacks.
+   const proofs=[...new Set([receiver.secret_hash,...await Promise.all(p.previous_tokens.map(hash))])];
+   const legacy=existing?[]:(await stmt(env.DB,`SELECT id FROM subscriptions WHERE owner=? AND receiver_id IS NOT NULL AND receiver_lineage IS NULL AND receiver_secret_hash IN (${proofs.map(()=>'?').join(',')}) AND expires>? LIMIT 2`,receiver.owner,...proofs,now()).all()).results;
+   if(legacy.length>1)throw error('Multiple legacy wake registrations use this credential. Renew the intended receiver registration separately before replacing it.',-32009);
+   const fence=receiverFence(receiver);
+   const changed=await env.DB.batch([
+    stmt(env.DB,'INSERT INTO receiver_lineages (id,owner,receiver_id,revision) SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM receiver_credentials WHERE id=? AND owner=? AND expires>?) AND (EXISTS (SELECT 1 FROM receiver_lineages WHERE id=?) OR (SELECT COUNT(*) FROM receiver_lineages WHERE owner=?)<100) ON CONFLICT(id) DO UPDATE SET receiver_id=excluded.receiver_id,revision=excluded.revision WHERE receiver_lineages.owner=excluded.owner AND (receiver_lineages.revision<excluded.revision OR receiver_lineages.revision=excluded.revision AND receiver_lineages.receiver_id=excluded.receiver_id)',receiver.lineage_id,receiver.owner,receiver.id,receiver.revision,receiver.id,receiver.owner,now(),receiver.lineage_id,receiver.owner),
+    stmt(env.DB,`UPDATE subscriptions SET receiver_lineage=? WHERE id=? AND owner=? AND receiver_lineage IS NULL AND expires>? AND ${fence.sql}`,receiver.lineage_id,legacy[0]?.id||'',receiver.owner,now(),...fence.args),
+    stmt(env.DB,`UPDATE subscriptions SET receiver_id=?,receiver_secret_hash=?,receiver_revision=? WHERE receiver_lineage=? AND owner=? AND expires>? AND receiver_revision<=? AND ${fence.sql}`,receiver.id,receiver.secret_hash,receiver.revision,receiver.lineage_id,receiver.owner,now(),receiver.revision,...fence.args)
+   ]);
+   await currentReceiver(env.DB,receiver);
+   if(legacy.length&&!changed[1].meta?.changes)throw error('Receiver registration changed during adoption. Retry through the receiving platform.',-32009);
+   result={restored:changed[2].meta?.changes||0};
+  }
   else {
    const p=a.params;
    if(!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).some(k=>!['name','arguments','delivery','ttlMs','cursor'].includes(k))||p.name!==EVENT||p.arguments!==undefined&&(!p.arguments||typeof p.arguments!=='object'||Array.isArray(p.arguments)||Object.keys(p.arguments).length))throw error('Receiver subscriptions use the bound account with empty arguments.');
    if(a.method==='subscribe')result=await subscribe(env.DB,receiver.owner,{...p,arguments:{}},env,receiver);
-   else {const url=callbackURL(p.delivery?.url,env);await stmt(env.DB,'DELETE FROM subscriptions WHERE receiver_id=? AND owner=? AND url=?',receiver.id,receiver.owner,url).run();result={};}
+   else {
+    const url=callbackURL(p.delivery?.url,env);
+    const bound=await stmt(env.DB,'SELECT receiver_id,receiver_revision,receiver_lineage FROM subscriptions WHERE owner=? AND receiver_id IS NOT NULL AND url=? AND expires>? ORDER BY id LIMIT 1',receiver.owner,url,now()).first();
+    if(bound&&(bound.receiver_id!==receiver.id||bound.receiver_revision>receiver.revision||(bound.receiver_lineage||null)!==(receiver.lineage_id||null)))throw error('Receiver binding changed. Retry through the current receiver pairing.',-32009);
+    const fence=receiverFence(receiver);
+    await stmt(env.DB,`DELETE FROM subscriptions WHERE receiver_id=? AND owner=? AND url=? AND receiver_revision<=? AND receiver_lineage IS ? AND ${fence.sql}`,receiver.id,receiver.owner,url,receiver.revision,receiver.lineage_id,...fence.args).run();
+    await currentReceiver(env.DB,receiver);
+    if(await stmt(env.DB,'SELECT id FROM subscriptions WHERE owner=? AND receiver_id IS NOT NULL AND url=? AND expires>? LIMIT 1',receiver.owner,url,now()).first())throw error('Receiver binding changed. Retry through the current receiver pairing.',-32009);
+    result={};
+   }
   }
   await securityAudit(env,actor,'receiver_'+a.method,'success');return json({result});
  }catch(e){await securityAudit(env,actor,'receiver_'+a.method,e.code===-32001?'denied':'failed');throw e;}

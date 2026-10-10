@@ -1,1 +1,10 @@
-{"name":"dotcord-receiver","version":"1.0.0","private":true,"type":"module","scripts":{"build":"node scripts/build.mjs","test":"node ../scripts/test-receiver-companion.mjs"}}
+{
+  "name": "dotcord-receiver",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test scripts/test-receiver.mjs scripts/test-event-envelope.mjs"
+  }
+}

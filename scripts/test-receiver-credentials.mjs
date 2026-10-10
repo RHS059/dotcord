@@ -33,23 +33,23 @@ try{
  const wake=await worker.fetch(new Request('https://relay.test/api/wake',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+created.secret},body:JSON.stringify({message_id:'denied',text:'@recipient'})}),env);assert.equal(wake.status,401,'Receiver credential cannot send wakes');
  const foreign=await receiver(created.secret,'subscribe',{...params,arguments:{dot_id:'sender'}});assert.ok(foreign.error);assert.equal(verificationCalls,0);
  const native=await subscribe('alpha');
- const result=await receiver(created.secret,'subscribe',params);assert.ok(result.result,JSON.stringify(result));assert.notEqual(result.result.id,native.id);assert.ok(result.result.refreshBefore<=created.receiver.expires);
+ const result=await receiver(created.secret,'subscribe',params);assert.ok(result.result,JSON.stringify(result));assert.notEqual(result.result.id,native.id);assert.ok(result.result.refreshBefore>created.receiver.expires,'Platform lease is separate from token authorization');
  assert.equal((await receiver(created.secret,'status')).result.active_subscriptions,2);
  events=[];await mention('recipient');assert.equal(events.length,2,'Mention resolves receiver and native subscriptions for recipient account');
  await rpc('alpha','events/unsubscribe',params);assert.ok(sql.prepare('SELECT id FROM subscriptions WHERE id=?').get(result.result.id),'Native unsubscribe cannot remove receiver');assert.equal(sql.prepare('SELECT id FROM subscriptions WHERE id=?').get(native.id),undefined);
  const native2=await subscribe('alpha');await receiver(created.secret,'unsubscribe',params);assert.ok(sql.prepare('SELECT id FROM subscriptions WHERE id=?').get(native2.id),'Receiver cannot remove native');
  await receiver(created.secret,'subscribe',params);await management('alpha','DELETE',{id:created.receiver.id});assert.equal((await receiver(created.secret,'status')).status,401);assert.equal((await tool('alpha','get_wake_status')).active_subscriptions,1);
- const second=await (await management('alpha','POST',{name:'Expiry',expires_in_days:1})).json();await receiver(second.secret,'subscribe',params);
+ const second=await (await management('alpha','POST',{name:'Expiry',expires_in_days:1})).json();await receiver(second.secret,'subscribe',{...params,delivery:{...params.delivery,url:params.delivery.url+'/expiry'}});
  sql.prepare('UPDATE receiver_credentials SET expires=? WHERE id=?').run('2000-01-01T00:00:00.000Z',second.receiver.id);assert.equal((await receiver(second.secret,'status')).status,401);assert.equal((await tool('alpha','get_wake_status')).active_subscriptions,1);assert.equal((await tool('alpha','list_dots')).find(d=>d.dot_id==='recipient').subscriptions,1);
  events=[];await mention('recipient');assert.equal(events.length,1,'Expired credentials prevent delivery despite unexpired subscription');
  const third=await (await management('alpha','POST',{name:'Revoked during challenge'})).json();const before=globalThis.fetch;globalThis.fetch=async(url,options)=>{const body=JSON.parse(options.body);if(body.type==='verification')sql.prepare('DELETE FROM receiver_credentials WHERE id=?').run(third.receiver.id);return before(url,options);};
- assert.equal((await receiver(third.secret,'subscribe',params)).status,401);assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM subscriptions WHERE receiver_id=?').get(third.receiver.id).n,0);globalThis.fetch=before;
+ assert.equal((await receiver(third.secret,'subscribe',{...params,delivery:{...params.delivery,url:params.delivery.url+'/challenge'}})).status,401);assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM subscriptions WHERE receiver_id=?').get(third.receiver.id).n,0);globalThis.fetch=before;
  // Complete synthetic companion -> relay -> ChatGPT callback -> mention route.
  const paired=await (await management('alpha','POST',{name:'Companion roundtrip'})).json();
  const companionEnv={DOTCORD_ORIGIN:'https://relay.test',DOTCORD_RECEIVER_TOKEN:paired.secret,RECEIVER_SUBJECT:'receiver-platform-subject'};
  let relayCalls=0;const external=globalThis.fetch;
  globalThis.fetch=async(url,options)=>{if(String(url)==='https://relay.test/api/receiver'){relayCalls++;assert.equal(new Headers(options.headers).has('oai-authenticated-user-id'),false);return worker.fetch(new Request(url,options),env);}return external(url,options);};
- const companionCall=async subject=>companion.fetch(new Request('https://receiver.test/mcp',{method:'POST',headers:{'content-type':'application/json','oai-authenticated-user-id':subject},body:JSON.stringify({jsonrpc:'2.0',id:2,method:'events/subscribe',params})}),companionEnv);
+ const companionCall=async subject=>companion.fetch(new Request('https://receiver.test/mcp',{method:'POST',headers:{'content-type':'application/json','oai-authenticated-user-id':subject},body:JSON.stringify({jsonrpc:'2.0',id:2,method:'events/subscribe',params:{...params,delivery:{...params.delivery,url:params.delivery.url+'/companion'}}})}),companionEnv);
  assert.equal((await companionCall('other-subject')).status,403);assert.equal(relayCalls,0,'Wrong companion account cannot reach relay');
  const bridge=await (await companionCall('receiver-platform-subject')).json();assert.ok(bridge.result?.id,JSON.stringify(bridge));assert.equal(relayCalls,1);
  events=[];await mention('recipient');assert.ok(events.some(e=>e.body.data.dot_id==='recipient'&&e.subscription===bridge.result.id),'Shared app mention reaches companion-registered callback');
@@ -103,7 +103,7 @@ try{
  await receiver(selected.secret,'subscribe',params);
  const untouched=await (await management('alpha','POST',{name:'Keep this receiver'})).json();
  assert.equal((await management('alpha','DELETE',{id:selected.receiver.id})).status,200);
- assert.equal(sql.prepare('SELECT id FROM subscriptions WHERE receiver_id=?').get(selected.receiver.id),undefined);
+ assert.ok(sql.prepare('SELECT id FROM subscriptions WHERE receiver_id=?').get(selected.receiver.id),'Revocation retains the inactive platform registration');
  assert.ok(sql.prepare('SELECT id FROM receiver_credentials WHERE id=?').get(untouched.receiver.id));
  env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'alpha@example.test',role:'member'},{email:'beta@example.test',role:'member'}]);assert.equal((await management('alpha','POST',{name:'Demoted issuer',account_id:betaId})).status,403);
  const fourth=await (await management('alpha','POST',{name:'Current access'})).json();env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'beta@example.test',role:'member'}]);assert.equal((await receiver(fourth.secret,'status')).status,401);

@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1791664740000,
+      "tag": "0000_receiver_pairing",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1791672301093,
+      "tag": "0001_receiver_continuity",
+      "breakpoints": true
+    }
+  ]
+}
