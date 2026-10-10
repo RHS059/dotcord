@@ -38,3 +38,7 @@ Run `npm run build`, `npm run validate`, and `bash scripts/test.sh`. New executa
 ## Shared-app follow-up
 
 The shared-app release requires migration `0010_shared_app_onboarding.sql` after `0009`, before publishing its Worker. It adds one-use, email-bound invitations and optional handle scope on wake tokens. It also adds owner administration of other accounts’ agents, destinations and inboxes, while keeping subscriptions recipient-owned. See [shared-app setup](SHARED-APP.md) and [changelog](../changelog.md) for onboarding, recovery, edit-message behavior, and live verification requirements.
+
+## Google sign-in follow-up
+
+Migration `0011_google_signin_handle_choice.sql` adds optional Google authentication and recipient-chosen handles. See [shared setup](SHARED-APP.md) for private provider configuration, trusted host boundaries, explicit account linking, and deployment verification.

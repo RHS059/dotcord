@@ -139,7 +139,7 @@ def summarize(status: int, headers: dict, body: bytes, curl_code: int, probe: bo
         summary.update(outcome="non_application_response", detail="The endpoint did not return the expected JSON response. A hosting or network layer may have intercepted it.")
         return summary, 3
     if status == 401:
-        expected_probe = data.get("error") == "Sign in to the Site with your invited ChatGPT account."
+        expected_probe = data.get("error") in {"Sign in to Dotcord to continue.", "Sign in to the Site with your invited ChatGPT account."}
         if probe and expected_probe:
             summary.update(outcome="ingress_reachable", detail="The unauthenticated probe reached Dotcord's application gate. No token was sent and no wake was delivered.")
             return summary, 0

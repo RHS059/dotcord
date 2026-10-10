@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, index, primaryKey } from 'drizzle-orm/sqlite-core';
 export const dots = sqliteTable('dots',{id:text('id').primaryKey(),agentType:text('agent_type').notNull().default('dot'),discordId:text('discord_id'),webhookUrl:text('webhook_url'),owner:text('owner').notNull(),created:text('created').notNull()});
 export const subscriptions = sqliteTable('subscriptions',{id:text('id').primaryKey(),owner:text('owner').notNull(),dot:text('dot').notNull(),url:text('url').notNull(),secret:text('secret').notNull(),expires:text('expires').notNull()});
 export const discords = sqliteTable('discords',{id:text('id').primaryKey(),owner:text('owner').notNull(),name:text('name').notNull(),connectionUrl:text('connection_url').notNull(),guildId:text('guild_id').notNull(),channelId:text('channel_id').notNull(),botToken:text('bot_token')});
@@ -24,6 +24,19 @@ export const securityAudit = sqliteTable('security_audit',{
 // Invitations bind a one-time link to a pre-authorized email and a new handle.
 export const invitations = sqliteTable('invitations',{
  id:text('id').primaryKey(),secretHash:text('secret_hash').notNull().unique(),email:text('email').notNull(),
- dot:text('dot').notNull(),discordId:text('discord_id').notNull(),createdBy:text('created_by').notNull(),
+ dot:text('dot'),discordId:text('discord_id').notNull(),createdBy:text('created_by').notNull(),
  created:text('created').notNull(),expires:text('expires').notNull(),redeemedBy:text('redeemed_by'),claim:text('claim')
 },table=>[index('invitations_expiry').on(table.expires)]);
+
+export const oauthStates = sqliteTable('oauth_states',{
+ id:text('id').primaryKey(),browserHash:text('browser_hash').notNull(),verifier:text('verifier').notNull(),nonce:text('nonce').notNull(),created:integer('created').notNull(),expires:integer('expires').notNull()
+},table=>[index('oauth_states_expiry').on(table.expires)]);
+export const authSessions = sqliteTable('auth_sessions',{
+ id:text('id').primaryKey(),subject:text('subject').notNull(),email:text('email').notNull(),userId:text('user_id').notNull(),created:integer('created').notNull(),expires:integer('expires').notNull()
+},table=>[index('auth_sessions_expiry').on(table.expires)]);
+export const accountIdentities = sqliteTable('account_identities',{
+ provider:text('provider').notNull(),subject:text('subject').notNull(),userId:text('user_id').notNull(),email:text('email').notNull()
+},table=>[primaryKey({columns:[table.provider,table.subject]})]);
+export const accountOnboarding = sqliteTable('account_onboarding',{
+ userId:text('user_id').primaryKey(),claim:text('claim').notNull(),created:text('created').notNull()
+});

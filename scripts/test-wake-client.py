@@ -59,7 +59,7 @@ class WakeClientTests(unittest.TestCase):
                 client.validate_payload({**routed, "recipients": recipients})
 
     def test_curl_secret_transport_and_headers(self):
-        body = b'{"error":"Sign in to the Site with your invited ChatGPT account."}'
+        body = b'{"error":"Sign in to Dotcord to continue."}'
         response = b"HTTP/1.1 200 Connection established\r\n\r\nHTTP/2 401\r\ncontent-type: application/json\r\ncf-ray: 0123456789abcdef-TST\r\n\r\n" + body + client.STATUS_MARKER + b"401"
         with patch.dict(os.environ, {"DOTCORD_TOKEN": FAKE_TOKEN, "HTTPS_PROXY": "http://configured-proxy.test:8080"}):
             with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, response, FAKE_TOKEN.encode())) as run:

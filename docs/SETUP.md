@@ -15,7 +15,7 @@ bash scripts/test.sh
 
 Do not replace the lockfile with an unconstrained upgrade or copy `node_modules` from another project when verifying a fresh install. A restricted environment may be unable to access npm; report that limit separately from tests using an already installed dependency tree.
 
-The build type-checks the React sources, runs Vite, embeds the single-file UI and exact Python client into the Worker, copies migrations, and emits:
+The build type-checks the React sources, runs Vite, embeds the single-file UI and exact Python client into the Worker, copies its Google authentication module and migrations, and emits:
 
 - `client-build/index.html`: production single-file client
 - `dist/server/index.js`: deployable Worker module, embedded UI, and downloadable client
@@ -25,7 +25,7 @@ The build type-checks the React sources, runs Vite, embeds the single-file UI an
 
 Build outputs are ignored. The public `.openai/hosting.example.json` supplies `d1: "DB"`, `r2: null`, and MCP capability. It intentionally has no project ID. When a private `.openai/hosting.json` exists, the build uses it instead. A template build is useful for local verification but is **not registered or deployed**.
 
-`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs all JavaScript regression files and the Python suite. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0010` in order. They do not contact Discord, a production database, or a live callback receiver.
+`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs all JavaScript regression files and the Python suite. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0011` in order. They do not contact Discord, a production database, or a live callback receiver.
 
 ## 2. Provision a new Sites deployment
 
@@ -65,15 +65,29 @@ Do not commit these per-deployment changes back to the public template. The orig
 - `MCP_CALLBACK_ORIGINS`: optional comma-separated exact HTTPS origins for independently verified receivers. `https://chatgpt.com` is already allowed. Do not add a URL supplied by an untrusted message or loosen this to arbitrary hosts.
 - `DB`: a platform D1 binding, **not** a string variable.
 
-The runtime has no public signup or independent Google/email login implementation. Owner-created application invitations onboard an already authorized host identity; they do not grant native Site access or change `AUTHORIZED_ACCOUNTS`. Site access and application access are separate gates. Native invitations alone do not populate this application's allowlist.
+Optional Google/Gmail sign-in authenticates allowed accounts directly in the app; configure it as described below. Host access policy and `AUTHORIZED_ACCOUNTS` remain separate gates. Google sign-in and application invites do not bypass either gate or grant public signup.
 
 Do not copy authentication values into `.openai/hosting.json`, `.env.example`, frontend source, tests, or Git. The public template contains no service token, Discord token, webhook URL, subscription signing secret, or private account list.
 
+### Optional Google/Gmail sign-in
+
+Create an OAuth **Web application** client in the deployment owner’s Google Cloud project and configure the consent screen/audience for the intended accounts. Request only `openid email`; Gmail inbox permissions are not needed. Register the exact HTTPS callback `https://YOUR-SITE-HOST/auth/google/callback` as an authorized redirect URI. Configure these server-only runtime settings:
+
+- `GOOGLE_CLIENT_ID`: the Web application's client ID.
+- `GOOGLE_CLIENT_SECRET`: its private client secret.
+- `GOOGLE_REDIRECT_URI`: the exact registered callback, on this deployment's origin, without query or fragment.
+
+The Google button is available only when all settings are valid for the current origin. Never commit a real client secret or place it in frontend configuration. `.env.example` documents variable names only; deployment must supply their values privately. Supported Google accounts, including Gmail accounts, must also be enabled in `AUTHORIZED_ACCOUNTS`.
+
+The hosting edge must let the intended user reach the app, `/auth/google/start`, and `/auth/google/callback`. A private native Site gate can block a Google user before Dotcord runs. Configure any required audience or route access through the platform-supported deployment settings; this code cannot bypass that gate. Even with public login routes, authenticated app actions retain allowlist checks. Preserve the trusted host-header gateway and prevent caller-supplied identity headers.
+
+For an existing host-created account, sign in with that host account before choosing Google with the same email, so the callback can verify both identities. For a Google-created account, use Settings to link its same-email host identity before connecting native MCP. See [account linking](SHARED-APP.md) for details. No Google credentials, consent configuration or live provider verification are included in this repository update.
+
 ## 4. Migrate, build, and publish
 
-Run the build and complete test sequence again after configuration. Publish the source and generated Worker artifact through the current Sites publishing workflow. That workflow must apply the included migrations to the D1 database **before** the Worker goes live. This release requires `0010_shared_app_onboarding.sql` after `0009_wake_security.sql`; an existing deployment must apply every missing migration in order. Preserve all SQL files, snapshots, and the journal; do not flatten the schema, remove old migrations, or regenerate an already applied migration.
+Run the build and complete test sequence again after configuration. Publish the source and generated Worker artifact through the current Sites publishing workflow. That workflow must apply the included migrations to the D1 database **before** the Worker goes live. This release requires `0011_google_signin_handle_choice.sql` after `0010_shared_app_onboarding.sql` and `0009_wake_security.sql`; an existing deployment must apply every missing migration in order. Preserve all SQL files, snapshots, and the journal; do not flatten the schema, remove old migrations, or regenerate an already applied migration.
 
-The database contains `accounts`, `api_tokens`, `discords`, `dots`, `subscriptions`, `temporary_inbox`, `wake_limits`, `security_audit`, `security_maintenance`, and `invitations`. Early migrations create two historical tables that migration `0002` removes; an empty database needs the full chain. No production records or seed credentials are part of any migration.
+The database contains `accounts`, `api_tokens`, `discords`, `dots`, `subscriptions`, `temporary_inbox`, `wake_limits`, `security_audit`, `security_maintenance`, `invitations`, `account_identities`, `account_onboarding`, `auth_sessions`, and `oauth_states`. Early migrations create two historical tables that migration `0002` removes; an empty database needs the full chain. No production records or seed credentials are part of any migration.
 
 Verify the deployment reaches a successful terminal state and record its returned URL. Publication alone does not verify a plugin connection, a Discord permission, or a task subscription.
 
@@ -83,7 +97,7 @@ Verify the deployment reaches a successful terminal state and record its returne
 
 1. Visit the deployed Site as the configured owner through the platform's sign-in/access flow. Verify the account appears masked and the Settings page is available.
 2. In Discord, add your own destination name, Discord channel link, and existing bot token. Saving validates format; it does not test the bot's permission. Supply credentials only through an approved private setup path. Create or expand credentials only with the owner's required authorization.
-3. For shared-app onboarding, first grant each intended account native Site access and add its email to `AUTHORIZED_ACCOUNTS`. In owner Settings, create an invitation for that authorized account, a new handle, and the shared Discord destination. Send each account only its own link. After host sign-in, redemption registers the handle and displays its first 30-day wake token once. See [shared-app setup](SHARED-APP.md). Add each agent’s existing webhook separately for Discord posting. Manual registration remains available; saving credentials does not contact Discord.
+3. For shared-app onboarding, first grant each intended account native Site access and add its email to `AUTHORIZED_ACCOUNTS`. In owner Settings, create an invitation for that authorized account and the shared Discord destination. Send each account only its own link. After sign-in, the recipient chooses an available handle; completing setup registers it and displays its first 30-day wake token once. An allowed first-time account can also choose its handle and destination without an application invitation. See [shared-app setup](SHARED-APP.md). Add each agent’s existing webhook separately for Discord posting. Manual registration remains available; saving credentials does not contact Discord.
 4. Have each intended account install/connect the Site's provisioned MCP integration through the platform's supported UI. Confirm a read-only `list_dots` or `list_discords` tool call. A schema appearing in discovery is not proof of authenticated access.
 5. Establish a compatible `dot.mentioned` event subscription for each receiving handle through that account's task/event system. Registration alone does not create one. The receiver must complete the signed verification challenge and handle signed deliveries. `list_dots` reports subscription readiness. Subscription renewal/scheduling is the external platform's responsibility.
 6. If token-based access is needed, create a wake-only token in the Tokens tab after OAuth sign-in. Choose 1, 7, 30 (default), or 90 days and keep the once-shown value privately. **Tokens can only send wakes**, including to other registered recipients. They cannot read inboxes, post to Discord, modify configuration, or create/revoke tokens.

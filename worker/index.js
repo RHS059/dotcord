@@ -1,3 +1,4 @@
+import {handleGoogleAuth,googleIdentity} from './google-auth.js';
 const EVENT='dot.mentioned';
 const GLOBAL=Symbol('wake-token');
 const INBOX_TTL_MS=15*60*1000;
@@ -215,22 +216,65 @@ async function accountActive(env,id){
  const account=await stmt(env.DB,'SELECT email,enabled FROM accounts WHERE user_id=?',id).first();
  return Boolean(account?.enabled&&configuredAccounts(env).some(a=>a.email===account.email));
 }
-async function accountAccess(request,env){
- const id=request.headers.get('oai-authenticated-user-id');if(!id)throw error('Sign in to continue.',-32001);
- const configured=configuredAccounts(env);
- const email=(request.headers.get('oai-authenticated-user-email')||'').trim().toLowerCase();
- const existing=email?await stmt(env.DB,'SELECT * FROM accounts WHERE email=?',email).first():await stmt(env.DB,'SELECT * FROM accounts WHERE user_id=?',id).first();
- const allowed=configured.find(a=>a.email===(email||existing?.email));
+async function authorizeIdentity(env,identity,linkProof=null){
+ const {provider,subject}=identity,email=identity.email.trim().toLowerCase();
+ if(!['host','google'].includes(provider)||typeof subject!=='string'||!subject)throw error('Invalid sign-in identity.',-32001);
+ const configured=configuredAccounts(env),allowed=configured.find(a=>a.email===email);
  if(!allowed)throw error('This account is not authorized.',-32001);
- // Seed configured accounts without changing enabled flags; synchronize role grants.
  for(const a of configured)await stmt(env.DB,'INSERT INTO accounts (email,role,enabled) VALUES (?,?,1) ON CONFLICT(email) DO UPDATE SET role=excluded.role',a.email,a.role).run();
- const account=await stmt(env.DB,'SELECT * FROM accounts WHERE email=?',allowed.email).first();
+ let account=await stmt(env.DB,'SELECT * FROM accounts WHERE email=?',email).first();
  if(!account.enabled)throw error('This account is disabled.',-32001);
- if(account.user_id&&account.user_id!==id)throw error('Account identity does not match.',-32001);
- await stmt(env.DB,'UPDATE accounts SET user_id=? WHERE email=? AND (user_id IS NULL OR user_id=?)',id,account.email,id).run();
- const bound=await stmt(env.DB,'SELECT user_id FROM accounts WHERE email=?',account.email).first();
- if(bound.user_id!==id)throw error('Account identity does not match.',-32001);
- return {...account,user_id:id};
+ const mapping=await stmt(env.DB,'SELECT user_id,email FROM account_identities WHERE provider=? AND subject=?',provider,subject).first();
+ if(mapping){
+  if(mapping.email!==email||account.user_id!==mapping.user_id)throw error('Account identity does not match.',-32001);
+  return {...account,auth_method:provider};
+ }
+ const canonical=provider==='google'?'google:'+subject:subject;
+ if(!account.user_id){
+  await stmt(env.DB,'UPDATE accounts SET user_id=? WHERE email=? AND user_id IS NULL',canonical,email).run();
+  account=await stmt(env.DB,'SELECT * FROM accounts WHERE email=?',email).first();
+ }
+ if(account.user_id!==canonical&&!(linkProof?.user_id===account.user_id&&linkProof.email===email))throw error('This email already has an account. Sign in with its existing provider, then link Google and ChatGPT in Settings.',-32001);
+ await stmt(env.DB,'INSERT INTO account_identities (provider,subject,user_id,email) VALUES (?,?,?,?) ON CONFLICT(provider,subject) DO NOTHING',provider,subject,account.user_id,email).run();
+ const bound=await stmt(env.DB,'SELECT user_id,email FROM account_identities WHERE provider=? AND subject=?',provider,subject).first();
+ if(bound.user_id!==account.user_id||bound.email!==email)throw error('Account identity does not match.',-32001);
+ return {...account,auth_method:provider};
+}
+function hostIdentity(request){
+ const subject=request.headers.get('oai-authenticated-user-id');if(!subject)return null;
+ return {provider:'host',subject,email:(request.headers.get('oai-authenticated-user-email')||'').trim().toLowerCase()};
+}
+async function resolveGoogleAccount(identity,request,env){
+ const host=hostIdentity(request);let proof=null;
+ // Matching email alone cannot link identities. Require a verified existing host
+ // identity for this exact canonical account in the browser doing the Google flow.
+ if(host&&host.email===identity.email){
+  const account=await stmt(env.DB,'SELECT user_id,email FROM accounts WHERE email=?',host.email).first();
+  const mapped=await stmt(env.DB,"SELECT user_id,email FROM account_identities WHERE provider='host' AND subject=?",host.subject).first();
+  if(account?.user_id&&(account.user_id===host.subject||mapped?.user_id===account.user_id&&mapped.email===host.email))proof=account;
+ }
+ try{return (await authorizeIdentity(env,{...identity,provider:'google'},proof)).user_id;}catch(e){if(e.code===-32001&&e.message.includes('existing provider'))e.code='GOOGLE_ACCOUNT_LINK_REQUIRED';throw e;}
+}
+async function accountAccess(request,env){
+ const google=await googleIdentity(request,env);
+ if(google){
+  const account=await authorizeIdentity(env,google);
+  if(account.user_id!==google.user_id)throw error('Account identity does not match.',-32001);
+  return account;
+ }
+ // A stale Google cookie must not silently switch actions to a passive host account.
+ if((request.headers.get('cookie')||'').split(';').some(c=>c.trim().startsWith('__Host-dotcord_session=')))throw error('Google session expired. Sign in again or sign out of Google.',-32001);
+ const host=hostIdentity(request);if(!host)throw error('Sign in to continue.',-32001);
+ if(!host.email){const mapped=await stmt(env.DB,"SELECT email FROM account_identities WHERE provider='host' AND subject=?",host.subject).first();const row=mapped||await stmt(env.DB,'SELECT email FROM accounts WHERE user_id=?',host.subject).first();host.email=row?.email||'';}
+ return authorizeIdentity(env,host);
+}
+async function linkHost(request,env,actor){
+ if(request.method!=='POST')return json({error:'POST required'},405);sameOrigin(request);await readJSON(request,2000);
+ const google=await googleIdentity(request,env),host=hostIdentity(request);
+ if(!google||!host||host.email!==google.email)throw error('Sign in to Google and ChatGPT with the same email before linking.',-32001);
+ const account=await authorizeIdentity(env,google);if(account.user_id!==google.user_id)throw error('Account identity does not match.',-32001);
+ await securityAudit(env,actor,'link_host','attempt');
+ await authorizeIdentity(env,host,account);await securityAudit(env,actor,'link_host','success');return json({linked:true});
 }
 export function maskEmail(value){if(typeof value!=='string'||!value.includes('@'))return '';const [local,domain]=value.split('@');const parts=domain.split('.');const tld=parts.length>1?'.'+parts.pop():'';const stem=parts.join('.');return (local[0]||'')+'***@'+(stem[0]||'')+'*****'+tld;}
 const accountActor=async id=>'account:'+await hash(id);
@@ -253,6 +297,8 @@ async function maintenance(env){
   stmt(env.DB,'DELETE FROM temporary_inbox WHERE id IN (SELECT id FROM temporary_inbox WHERE expires<=? LIMIT 500)',now()),
   stmt(env.DB,'DELETE FROM wake_limits WHERE dot IN (SELECT dot FROM wake_limits WHERE next_allowed<=? LIMIT 500)',time-86400000),
   stmt(env.DB,'DELETE FROM security_audit WHERE id IN (SELECT id FROM security_audit WHERE created<? LIMIT 500)',new Date(time-30*86400000).toISOString()),
+  stmt(env.DB,'DELETE FROM oauth_states WHERE id IN (SELECT id FROM oauth_states WHERE expires<=? LIMIT 100)',time),
+  stmt(env.DB,'DELETE FROM auth_sessions WHERE id IN (SELECT id FROM auth_sessions WHERE expires<=? LIMIT 100)',time),
   stmt(env.DB,'DELETE FROM invitations WHERE id IN (SELECT id FROM invitations WHERE expires<=? LIMIT 500)',now()),
   stmt(env.DB,'DELETE FROM subscriptions WHERE id IN (SELECT id FROM subscriptions WHERE expires<=? LIMIT 500)',now())
  ]);
@@ -351,10 +397,10 @@ async function invitationManagement(request,env,account,actor){
  const rows=(await stmt(env.DB,'SELECT email,enabled FROM accounts').all()).results;let recipient;
  for(const row of rows)if(await hash(row.email)===a.account_id){recipient=row;break;}
  if(!recipient?.enabled||!configuredAccounts(env).some(r=>r.email===recipient.email))throw error('Select an enabled authorized account.');
- const dot=name(a.dot_id),discordId=text(a.discord_id,100);
+ const dot=a.dot_id===undefined?null:name(a.dot_id),discordId=text(a.discord_id,100);
  if(!await stmt(env.DB,'SELECT id FROM discords WHERE id=?',discordId).first())throw error('Select a configured Discord.');
  const id=crypto.randomUUID(),secret=randomSecret(),created=now(),expires=new Date(Date.now()+86400000).toISOString();
- await securityAudit(env,actor,'invitation_create','attempt',dot);
+ await securityAudit(env,actor,'invitation_create','attempt',dot||'invitation');
  const inserted=await stmt(env.DB,`INSERT INTO invitations (id,secret_hash,email,dot,discord_id,created_by,created,expires)
  SELECT ?,?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM dots WHERE id=?)
  AND NOT EXISTS (SELECT 1 FROM invitations WHERE dot=? AND redeemed_by IS NULL AND expires>?)
@@ -367,45 +413,54 @@ async function invitationManagement(request,env,account,actor){
 }
 async function onboard(request,env,account,actor){
  if(request.method!=='POST')return json({error:'POST required'},405);
- sameOrigin(request);const a=await readJSON(request,2000);
- if(typeof a.invite!=='string'||! /^[A-Za-z0-9_-]{43}$/.test(a.invite))throw error('Invalid invitation.');
- const invite=await stmt(env.DB,'SELECT * FROM invitations WHERE secret_hash=? AND email=? AND expires>? AND redeemed_by IS NULL',await hash(a.invite),account.email,now()).first();
- if(!invite)throw error('Invitation is expired, used, revoked, or belongs to another account.',-32001);
- const issuer=await stmt(env.DB,'SELECT email,enabled FROM accounts WHERE user_id=?',invite.created_by).first();
- if(!issuer?.enabled||!configuredAccounts(env).some(a=>a.email===issuer.email&&a.role==='owner'))throw error('Invitation issuer is no longer an administrator.',-32001);
- const connection=await stmt(env.DB,'SELECT id,name FROM discords WHERE id=?',invite.discord_id).first();if(!connection)throw error('Invitation destination was removed.');
- if(a.action==='preview')return json({dot_id:invite.dot,discord:connection.name,expires:invite.expires});
+ sameOrigin(request);const a=await readJSON(request,2000);let invite=null;
+ if(a.invite!==undefined){
+  if(typeof a.invite!=='string'||! /^[A-Za-z0-9_-]{43}$/.test(a.invite))throw error('Invalid invitation.');
+  invite=await stmt(env.DB,'SELECT * FROM invitations WHERE secret_hash=? AND email=? AND expires>? AND redeemed_by IS NULL',await hash(a.invite),account.email,now()).first();
+  if(!invite)throw error('Invitation is expired, used, revoked, or belongs to another account.',-32001);
+  const issuer=await stmt(env.DB,'SELECT email,enabled FROM accounts WHERE user_id=?',invite.created_by).first();
+  if(!issuer?.enabled||!configuredAccounts(env).some(a=>a.email===issuer.email&&a.role==='owner'))throw error('Invitation issuer is no longer an administrator.',-32001);
+ }
+ const discordId=invite?.discord_id||text(a.discord_id,100);
+ const connection=await stmt(env.DB,'SELECT id,name FROM discords WHERE id=?',discordId).first();if(!connection)throw error('Select an available Discord destination.');
+ if(a.action==='preview'&&invite)return json({suggested_handle:invite.dot||'',discord:connection.name,expires:invite.expires});
  if(a.action!=='accept')throw error('Invalid onboarding action.');
- const secret=randomSecret(),token={id:crypto.randomUUID(),name:invite.dot,prefix:secret.slice(0,4),created:now(),expires:new Date(Date.now()+30*86400000).toISOString(),dot:invite.dot};
- await securityAudit(env,actor,'onboarding','attempt',invite.dot);
- // D1 batch is transactional. A unique per-request claim gates every write, so
- // concurrent redemption cannot issue a second token or transfer a handle.
+ const dot=name(a.dot_id??invite?.dot); // Old issued links may suggest, never force, a handle.
+ const secret=randomSecret(),token={id:crypto.randomUUID(),name:dot,prefix:secret.slice(0,4),created:now(),expires:new Date(Date.now()+30*86400000).toISOString(),dot};
+ await securityAudit(env,actor,'onboarding','attempt',dot);
+ const gate=invite?'SELECT 1 FROM invitations WHERE id=? AND claim=?':'SELECT 1 FROM account_onboarding WHERE user_id=? AND claim=?';
+ const gateArgs=[invite?.id||account.user_id,token.id];
+ const claim=invite?
+  stmt(env.DB,`UPDATE invitations SET redeemed_by=?,claim=?,dot=? WHERE id=? AND redeemed_by IS NULL AND expires>?
+   AND NOT EXISTS (SELECT 1 FROM dots WHERE id=?) AND (SELECT COUNT(*) FROM api_tokens WHERE owner=?)<100`,account.user_id,token.id,dot,invite.id,now(),dot,account.user_id):
+  stmt(env.DB,`INSERT INTO account_onboarding (user_id,claim,created) SELECT ?,?,?
+   WHERE NOT EXISTS (SELECT 1 FROM dots WHERE id=? OR owner=?) AND (SELECT COUNT(*) FROM api_tokens WHERE owner=?)<100
+   ON CONFLICT(user_id) DO NOTHING`,account.user_id,token.id,token.created,dot,account.user_id,account.user_id);
+ // Every dependent write is gated by the same one-time transaction claim.
  await env.DB.batch([
-  stmt(env.DB,`UPDATE invitations SET redeemed_by=?,claim=? WHERE id=? AND redeemed_by IS NULL AND expires>?
-   AND NOT EXISTS (SELECT 1 FROM dots WHERE id=?) AND (SELECT COUNT(*) FROM api_tokens WHERE owner=?)<100`,account.user_id,token.id,invite.id,now(),invite.dot,account.user_id),
-  stmt(env.DB,`INSERT INTO dots (id,owner,created,agent_type,discord_id) SELECT dot,redeemed_by,?,'dot',discord_id FROM invitations WHERE id=? AND claim=?`,token.created,invite.id,token.id),
-  stmt(env.DB,`INSERT INTO api_tokens (id,name,prefix,token_hash,created,owner,expires,dot)
-   SELECT ?,?,?,?,?,redeemed_by,?,dot FROM invitations WHERE id=? AND claim=?`,token.id,token.name,token.prefix,await hash(secret),token.created,token.expires,invite.id,token.id),
-  stmt(env.DB,`INSERT INTO security_audit (id,created,actor,action,outcome,resource,count)
-   SELECT ?,?,?,'onboarding','success',dot,1 FROM invitations WHERE id=? AND claim=?`,crypto.randomUUID(),now(),actor,invite.id,token.id),
+  claim,
+  stmt(env.DB,`INSERT INTO dots (id,owner,created,agent_type,discord_id) SELECT ?,?,?,'dot',? WHERE EXISTS (${gate})`,dot,account.user_id,token.created,discordId,...gateArgs),
+  stmt(env.DB,`INSERT INTO api_tokens (id,name,prefix,token_hash,created,owner,expires,dot) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (${gate})`,token.id,token.name,token.prefix,await hash(secret),token.created,account.user_id,token.expires,dot,...gateArgs),
+  stmt(env.DB,`INSERT INTO security_audit (id,created,actor,action,outcome,resource,count) SELECT ?,?,?,'onboarding','success',?,1 WHERE EXISTS (${gate})`,crypto.randomUUID(),now(),actor,dot,...gateArgs),
+  ...(invite?[stmt(env.DB,`INSERT INTO account_onboarding (user_id,claim,created) SELECT ?,?,? WHERE EXISTS (${gate}) ON CONFLICT(user_id) DO NOTHING`,account.user_id,token.id,token.created,...gateArgs)]:[]),
   stmt(env.DB,'DELETE FROM security_audit WHERE id IN (SELECT id FROM security_audit ORDER BY created DESC,id DESC LIMIT -1 OFFSET 10000)')
  ]);
- const claim=await stmt(env.DB,'SELECT claim FROM invitations WHERE id=?',invite.id).first();
- if(claim?.claim!==token.id)throw Object.assign(error('Invitation already used, handle registered, or token limit reached. Refresh your agents and Tokens page.'),{status:409});
- return json({registered:true,dot_id:invite.dot,token,secret,subscription_required:true},201);
+ if(!await stmt(env.DB,gate,...gateArgs).first())throw Object.assign(error('Handle is taken, setup already completed, invitation already used, or token limit reached. Choose another handle or check Agents and Tokens.'),{status:409});
+ return json({registered:true,dot_id:dot,token,secret,subscription_required:true},201);
 }
 
 const wakeClient=null;
 const page='<!doctype html><html><body><div id="root"></div></body></html>';
 export default {async fetch(request,env){
  const url=new URL(request.url),path=url.pathname;let actor='anonymous',action='request',p;
+ try{const authResponse=await handleGoogleAuth(request,env,{resolveAccount:identity=>resolveGoogleAccount(identity,request,env),audit:(action,outcome)=>securityAudit(env,'anonymous',action,outcome)});if(authResponse)return authResponse;}catch{return json({error:'Sign-in service unavailable.'},503);}
  if(path==='/'&&request.method==='GET')return new Response(page,{headers:{'content-type':'text/html;charset=utf-8','cache-control':'no-store','content-security-policy':"default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self' https://chatgpt.com",'x-content-type-options':'nosniff','referrer-policy':'strict-origin-when-cross-origin'}});
  if(path==='/clients/dotcord_wake.py'){
   if(request.method!=='GET')return json({error:'GET required'},405);
   if(!wakeClient)return json({error:'Client download is available in the built Site.'},503);
   return new Response(wakeClient,{headers:{'content-type':'text/x-python;charset=utf-8','content-disposition':'attachment; filename="dotcord_wake.py"','cache-control':'no-store','x-content-type-options':'nosniff'}});
  }
- if(!['/api/tokens','/api/accounts','/api/account','/api/audit','/api/invitations','/api/onboarding','/mcp','/api/tool','/api/wake'].includes(path))return json({error:'Not found'},404);
+ if(!['/api/auth/link-host','/api/tokens','/api/accounts','/api/account','/api/audit','/api/invitations','/api/onboarding','/mcp','/api/tool','/api/wake'].includes(path))return json({error:'Not found'},404);
  const rpc=result=>json({jsonrpc:'2.0',id:p.id??null,result});
  try{
   if(path==='/mcp'){
@@ -417,16 +472,18 @@ export default {async fetch(request,env){
    if(p.method==='notifications/initialized')return new Response(null,{status:202});
    if(p.method==='tools/list')return rpc({tools});if(p.method==='events/list')return rpc({events:[definition]});
   }
-  if(!request.headers.get('authorization')&&!request.headers.get('oai-authenticated-user-id'))throw error('Sign in to the Site with your invited ChatGPT account.',-32001);
+  if(!request.headers.get('authorization')&&!request.headers.get('oai-authenticated-user-id')&&!(request.headers.get('cookie')||'').includes('__Host-dotcord_session='))throw error('Sign in to Dotcord to continue.',-32001);
   if(!env.DB)return json({error:'Storage is not ready'},503);
   const token=await tokenAuthority(request,env);
   let account,owner;
   if(token){actor='token:'+token.id;owner={[GLOBAL]:true,token};if(!['/api/wake','/api/tool','/mcp'].includes(path))throw error('This token can only send wakes.',-32001);}
   else {account=await accountAccess(request,env);owner=account.user_id;actor=await accountActor(owner);}
+  if(account?.auth_method==='google'&&path==='/mcp'&&!request.headers.get('origin'))throw error('Same-origin request required for Google sessions.',-32001);
   await maintenance(env);
+  if(path==='/api/auth/link-host'){action='link_host';return await linkHost(request,env,actor);}
   if(path==='/api/invitations'){action='invitations';return await invitationManagement(request,env,account,actor);}
   if(path==='/api/onboarding'){action='onboarding';return await onboard(request,env,account,actor);}
-  if(path==='/api/account'){if(request.method!=='GET')return json({error:'GET required'},405);return json({email:maskEmail(account.email),can_manage_accounts:account.role==='owner'});}
+  if(path==='/api/account'){if(request.method!=='GET')return json({error:'GET required'},405);const own=await stmt(env.DB,'SELECT COUNT(*) n FROM dots WHERE owner=?',account.user_id).first();const setup=await stmt(env.DB,'SELECT user_id FROM account_onboarding WHERE user_id=?',account.user_id).first();return json({email:maskEmail(account.email),auth_method:account.auth_method,can_manage_accounts:account.role==='owner',needs_setup:own.n===0&&!setup});}
   if(path==='/api/accounts'){action='accounts';return await accountSettings(request,env,account,actor);}
   if(path==='/api/tokens'){action='tokens';return await tokenManagement(request,env,account,actor);}
   if(path==='/api/audit'){

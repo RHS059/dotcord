@@ -78,6 +78,13 @@
       "when": 1791653389009,
       "tag": "0010_shared_app_onboarding",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1791655579466,
+      "tag": "0011_google_signin_handle_choice",
+      "breakpoints": true
     }
   ]
 }
