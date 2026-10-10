@@ -2,7 +2,7 @@
 
 ## Trusted identity is required
 
-The unmodified Worker consumes `oai-authenticated-user-id` and `oai-authenticated-user-email` as trusted hosting-provided identity. It does not cryptographically authenticate these headers itself. ChatGPT Sites is the intended host. A generic public Worker deployment that accepts caller-supplied versions of these headers is unsafe: an attacker could claim an allowed account's identity.
+The Worker consumes `oai-authenticated-user-id` and `oai-authenticated-user-email` as trusted hosting-provided identity. It does not cryptographically authenticate these headers itself. ChatGPT Sites is the intended host. A generic public Worker deployment that accepts caller-supplied versions of these headers is unsafe: an attacker could claim an allowed account's identity.
 
 An alternate host must authenticate the caller, strip every untrusted identity-header value, inject its verified identity, and prevent direct access around that gateway. Providing such a gateway is outside this snapshot. Do not use a public mock-auth server, disable the authorization checks, or solve setup by making the raw Worker public.
 
@@ -45,3 +45,15 @@ One wake request per recipient is admitted per 15 seconds, across all tokens and
 Cleanup uses a shared once-per-minute lease after successful authentication, with a scheduled handler for hosts that configure cron. Public static, discovery and unauthenticated requests do not trigger inbox cleanup. Configure the scheduled handler if physical cleanup is required during idle periods. Provider backups remain outside application deletion.
 
 The runtime allowlist is authoritative, including current roles. Removing an email denies subsequent OAuth requests, issuer-bound token calls, and recipient deliveries, even when an old enabled database row exists. The owner account cannot be disabled through the UI/API. Before changing runtime allowlist configuration, retain a valid owner entry.
+
+## Shared-app invitations and administration
+
+Migration `0010_shared_app_onboarding.sql` follows `0009` and must run before the shared-app Worker is published. Application invitations require prior native Site access and an enabled entry in `AUTHORIZED_ACCOUNTS`. Only an owner can issue or revoke them. A link expires after 24 hours, is bound to its intended email and a new handle/destination, and can be redeemed once. Its random secret is stored only as a hash and carried in the URL fragment; the browser submits it only to the same-origin onboarding endpoint. Handle registration and the first issuer-bound 30-day wake token are created atomically. Full token secrets are shown once.
+
+Onboarding tokens are bound to their handle and route wakes only within that handle’s current configured Discord channel. Removing/disabling the issuing account blocks them. Renaming the handle updates the binding; deleting it revokes its scoped tokens. Manual creation can select an owned handle (API `dot_id`) for the same-channel restriction. Manual tokens without a handle binding retain the wider wake-only recipient scope documented above. Neither kind exposes another agent’s token or allows Discord posting/editing, inbox reads, or administration.
+
+The owner may manage all agents and destinations and read or acknowledge any inbox. Owners receive full authorized emails only through their administrative account response, for invitation selection; these are not public discovery data. Secrets remain excluded from list responses. Subscription creation/removal still requires the recipient account, including when an owner administers its registration.
+
+`edit_discord_message` requires the agent owner or application owner, the saved webhook, and a validated destination/message match before its single PATCH request. Edits suppress Discord mention parsing, do not send a new wake, and do not overwrite existing inbox copies. Uncertain results require checking Discord before a manual retry.
+
+See [shared-app setup and recovery](docs/SHARED-APP.md). This release does not add Google or email authentication, grant hosting access, create platform event tasks, or prove a live sleeping-agent wake.

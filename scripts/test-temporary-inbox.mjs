@@ -50,7 +50,8 @@ try{
  const schemas=await (await worker.fetch(new Request('https://relay.test/mcp',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:1,method:'tools/list'})}),env)).json();
  for(const tool of ['list_pending_messages','read_pending_message','acknowledge_message'])assert.ok(schemas.result.tools.find(t=>t.name===tool));
  assert.ok((await call('list_pending_messages',{dot_id:'recipient'},null)).value.error);
- assert.ok((await call('list_pending_messages',{dot_id:'recipient'},'owner')).value.error,'Site owner does not gain recipient inbox access');
+ assert.deepEqual((await list('recipient','owner')).messages,[],'Admin can inspect recipient inbox');
+ assert.ok((await call('list_pending_messages',{dot_id:'recipient'},'other')).value.error,'Other members cannot inspect recipient inbox');
  assert.ok((await call('list_pending_messages',{dot_id:'recipient'},'disabled')).value.error);
  assert.ok((await call('list_pending_messages',{dot_id:'recipient',actor:'receiver'},'owner')).value.error);
  assert.ok((await call('list_pending_messages',{dot_id:'recipient',global:true},'owner')).value.error);
@@ -71,7 +72,8 @@ try{
  assert.equal(RealDate.parse(original.expires_at)-RealDate.parse(original.created_at),900000);
  assert.equal((await list()).messages.length,1,'Read never acknowledges');
  assert.ok((await call('read_pending_message',{dot_id:'recipient',inbox_id:first.inbox_id},'global')).value.error,'Wake tokens cannot read inboxes');
- for(const who of ['owner','other']){
+ assert.equal((await read(first.inbox_id,'recipient','owner')).text,exactText,'Admin reads preserve content and do not acknowledge');
+ for(const who of ['other']){
   assert.ok((await call('read_pending_message',{dot_id:'recipient',inbox_id:first.inbox_id},who)).value.error);
   assert.ok((await call('acknowledge_message',{dot_id:'recipient',inbox_id:first.inbox_id},who)).value.error);
  }

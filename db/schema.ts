@@ -5,7 +5,7 @@ export const discords = sqliteTable('discords',{id:text('id').primaryKey(),owner
 
 export const accounts = sqliteTable('accounts',{email:text('email').primaryKey(),userId:text('user_id'),role:text('role').notNull(),enabled:integer('enabled').notNull().default(1)});
 
-export const apiTokens = sqliteTable('api_tokens',{id:text('id').primaryKey(),name:text('name').notNull(),prefix:text('prefix').notNull(),tokenHash:text('token_hash').notNull().unique(),created:text('created').notNull(),owner:text('owner'),expires:text('expires')});
+export const apiTokens = sqliteTable('api_tokens',{id:text('id').primaryKey(),name:text('name').notNull(),prefix:text('prefix').notNull(),tokenHash:text('token_hash').notNull().unique(),created:text('created').notNull(),owner:text('owner'),expires:text('expires'),dot:text('dot')});
 
 // Pending content is readable for 15 minutes. Acknowledgment clears payload; the
 // remaining hash-only receipt prevents duplicate reappearance until expiry.
@@ -20,3 +20,10 @@ export const securityMaintenance = sqliteTable('security_maintenance',{id:text('
 export const securityAudit = sqliteTable('security_audit',{
  id:text('id').primaryKey(),created:text('created').notNull(),actor:text('actor').notNull(),action:text('action').notNull(),outcome:text('outcome').notNull(),resource:text('resource').notNull(),count:integer('count').notNull().default(1)
 },table=>[index('security_audit_created').on(table.created,table.id)]);
+
+// Invitations bind a one-time link to a pre-authorized email and a new handle.
+export const invitations = sqliteTable('invitations',{
+ id:text('id').primaryKey(),secretHash:text('secret_hash').notNull().unique(),email:text('email').notNull(),
+ dot:text('dot').notNull(),discordId:text('discord_id').notNull(),createdBy:text('created_by').notNull(),
+ created:text('created').notNull(),expires:text('expires').notNull(),redeemedBy:text('redeemed_by'),claim:text('claim')
+},table=>[index('invitations_expiry').on(table.expires)]);

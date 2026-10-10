@@ -4,10 +4,10 @@ This update implements the owner's requested security changes while retaining Di
 
 | Capability | OAuth account | Wake token |
 | --- | --- | --- |
-| Send wakes | Existing sender/destination permissions | Any configured subscribed recipient |
-| Read/acknowledge inbox | Registered handle owner | Denied |
+| Send wakes | Existing sender/destination permissions | Onboarding tokens: bound handle’s current channel; unscoped manual tokens: configured subscribed recipients |
+| Read/acknowledge inbox | Registered handle owner or application owner | Denied |
 | Read/post Discord | Existing application permissions | Denied |
-| Manage own registrations/destinations | Existing ownership checks | Denied |
+| Manage registrations/destinations | Own resources; application owner may manage all | Denied |
 | Create tokens | Enabled allowlisted account | Denied |
 | List/revoke tokens | Own tokens; owner may manage all | Denied |
 | Manage accounts / read security audit | Owner | Denied |
@@ -34,3 +34,7 @@ Security audit metadata is capped at 10,000 rows and purged after 30 days in bat
 ## Validation
 
 Run `npm run build`, `npm run validate`, and `bash scripts/test.sh`. New executable security scenarios live in `scripts/test-wake-security.mjs`; Gherkin descriptions are in `tests/security.feature`. Older functional tests reset cooldown fixture rows between independent delivery scenarios; the dedicated security suite leaves cooldowns intact and checks parallel requests and exact time boundaries. No test uses production credentials or live Discord callbacks.
+
+## Shared-app follow-up
+
+The shared-app release requires migration `0010_shared_app_onboarding.sql` after `0009`, before publishing its Worker. It adds one-use, email-bound invitations and optional handle scope on wake tokens. It also adds owner administration of other accounts’ agents, destinations and inboxes, while keeping subscriptions recipient-owned. See [shared-app setup](SHARED-APP.md) and [changelog](../changelog.md) for onboarding, recovery, edit-message behavior, and live verification requirements.

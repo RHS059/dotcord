@@ -58,7 +58,8 @@ try{
  assert.equal((await wake('external_agent','@recipient_one fixture',{token:'x'.repeat(43)})).status,401);
  assert.equal((await wake('external_agent','@recipient_one fixture',{token:false})).status,401);
  assert.equal((await wake('external_agent','@recipient_one fixture',{session:'owner'})).status,403);
- assert.equal((await wake('recipient_one','@receiver fixture',{session:'owner'})).status,403);
+ assert.equal((await wake('registered_sender','@receiver fixture',{session:'other'})).status,403,'Members cannot use another account’s sender');
+ assert.equal((await wake('recipient_one','@receiver fixture',{session:'owner'})).data.results[0].status,'different_discord','Admin sender access still enforces channel boundary');
  assert.equal((await wake('registered_sender','@recipient_one fixture',{session:'owner'})).data.results[0].status,'different_discord');
  assert.equal(events.length,calls,'Rejected or inactive requests never deliver callbacks');
  const source='https://discord.com/channels/'+g1+'/'+c1+'/567890123456789012';

@@ -25,7 +25,7 @@ The build type-checks the React sources, runs Vite, embeds the single-file UI an
 
 Build outputs are ignored. The public `.openai/hosting.example.json` supplies `d1: "DB"`, `r2: null`, and MCP capability. It intentionally has no project ID. When a private `.openai/hosting.json` exists, the build uses it instead. A template build is useful for local verification but is **not registered or deployed**.
 
-`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs all JavaScript regression files and the Python suite. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0009` in order. They do not contact Discord, a production database, or a live callback receiver.
+`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs all JavaScript regression files and the Python suite. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0010` in order. They do not contact Discord, a production database, or a live callback receiver.
 
 ## 2. Provision a new Sites deployment
 
@@ -65,15 +65,15 @@ Do not commit these per-deployment changes back to the public template. The orig
 - `MCP_CALLBACK_ORIGINS`: optional comma-separated exact HTTPS origins for independently verified receivers. `https://chatgpt.com` is already allowed. Do not add a URL supplied by an untrusted message or loosen this to arbitrary hosts.
 - `DB`: a platform D1 binding, **not** a string variable.
 
-The runtime has no public signup or independent login implementation. Site access and application access are separate gates. Native invitations alone do not populate this application's allowlist.
+The runtime has no public signup or independent Google/email login implementation. Owner-created application invitations onboard an already authorized host identity; they do not grant native Site access or change `AUTHORIZED_ACCOUNTS`. Site access and application access are separate gates. Native invitations alone do not populate this application's allowlist.
 
 Do not copy authentication values into `.openai/hosting.json`, `.env.example`, frontend source, tests, or Git. The public template contains no service token, Discord token, webhook URL, subscription signing secret, or private account list.
 
 ## 4. Migrate, build, and publish
 
-Run the build and complete test sequence again after configuration. Publish the source and generated Worker artifact through the current Sites publishing workflow. That workflow must apply the included migrations to the new D1 database **before** the Worker goes live. Preserve all SQL files, snapshots, and the journal; do not flatten the schema, remove old migrations, or regenerate an already applied migration.
+Run the build and complete test sequence again after configuration. Publish the source and generated Worker artifact through the current Sites publishing workflow. That workflow must apply the included migrations to the D1 database **before** the Worker goes live. This release requires `0010_shared_app_onboarding.sql` after `0009_wake_security.sql`; an existing deployment must apply every missing migration in order. Preserve all SQL files, snapshots, and the journal; do not flatten the schema, remove old migrations, or regenerate an already applied migration.
 
-The database contains `accounts`, `api_tokens`, `discords`, `dots`, `subscriptions`, `temporary_inbox`, `wake_limits`, `security_audit`, and `security_maintenance`. Early migrations create two historical tables that migration `0002` removes; an empty database needs the full chain. No production records or seed credentials are part of any migration.
+The database contains `accounts`, `api_tokens`, `discords`, `dots`, `subscriptions`, `temporary_inbox`, `wake_limits`, `security_audit`, `security_maintenance`, and `invitations`. Early migrations create two historical tables that migration `0002` removes; an empty database needs the full chain. No production records or seed credentials are part of any migration.
 
 Verify the deployment reaches a successful terminal state and record its returned URL. Publication alone does not verify a plugin connection, a Discord permission, or a task subscription.
 
@@ -83,7 +83,7 @@ Verify the deployment reaches a successful terminal state and record its returne
 
 1. Visit the deployed Site as the configured owner through the platform's sign-in/access flow. Verify the account appears masked and the Settings page is available.
 2. In Discord, add your own destination name, Discord channel link, and existing bot token. Saving validates format; it does not test the bot's permission. Supply credentials only through an approved private setup path. Create or expand credentials only with the owner's required authorization.
-3. Add a Dot or non-Dot agent with its lowercase handle, destination, and existing Discord webhook URL. Configure every recipient separately. Saving credentials does not contact Discord.
+3. For shared-app onboarding, first grant each intended account native Site access and add its email to `AUTHORIZED_ACCOUNTS`. In owner Settings, create an invitation for that authorized account, a new handle, and the shared Discord destination. Send each account only its own link. After host sign-in, redemption registers the handle and displays its first 30-day wake token once. See [shared-app setup](SHARED-APP.md). Add each agent’s existing webhook separately for Discord posting. Manual registration remains available; saving credentials does not contact Discord.
 4. Have each intended account install/connect the Site's provisioned MCP integration through the platform's supported UI. Confirm a read-only `list_dots` or `list_discords` tool call. A schema appearing in discovery is not proof of authenticated access.
 5. Establish a compatible `dot.mentioned` event subscription for each receiving handle through that account's task/event system. Registration alone does not create one. The receiver must complete the signed verification challenge and handle signed deliveries. `list_dots` reports subscription readiness. Subscription renewal/scheduling is the external platform's responsibility.
 6. If token-based access is needed, create a wake-only token in the Tokens tab after OAuth sign-in. Choose 1, 7, 30 (default), or 90 days and keep the once-shown value privately. **Tokens can only send wakes**, including to other registered recipients. They cannot read inboxes, post to Discord, modify configuration, or create/revoke tokens.

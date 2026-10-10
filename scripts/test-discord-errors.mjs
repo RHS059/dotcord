@@ -76,8 +76,8 @@ try{
   assert.match((await tool('register_dot',{dot_id:'sender',discord_id:first.id,agent_type:'agent'})).error,/other category/);
   assert.equal(sql.prepare('SELECT discord_id FROM dots WHERE id=?').get('sender').discord_id,second.id);
   assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM subscriptions').get().n,1);
-  assert.deepEqual(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r=>r.name),['accounts','api_tokens','discords','dots','security_audit','security_maintenance','subscriptions','temporary_inbox','wake_limits']);
-  for(const table of ['accounts','api_tokens','discords','dots','security_audit','security_maintenance','subscriptions','temporary_inbox','wake_limits']){
+  assert.deepEqual(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r=>r.name),['accounts','api_tokens','discords','dots','invitations','security_audit','security_maintenance','subscriptions','temporary_inbox','wake_limits']);
+  for(const table of ['accounts','api_tokens','discords','dots','invitations','security_audit','security_maintenance','subscriptions','temporary_inbox','wake_limits']){
     const data=JSON.stringify(sql.prepare('SELECT * FROM '+table).all());
     for(const ephemeral of ['uncertain body','timed out','not in your channel','wrong source'])assert.ok(!data.includes(ephemeral));
   }
