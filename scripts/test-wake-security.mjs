@@ -37,7 +37,8 @@ try{
  for(const path of ['/api/accounts','/api/tokens','/api/account','/api/audit'])assert.equal((await req(path,null,{token:secret})).status,403,path);
  assert.equal((await req('/api/tokens',{name:'Escalate'},{token:secret})).status,403);
  for(const name of ['list_dots','list_discords','read_pending_message','acknowledge_message','register_dot','delete_agent','post_to_discord','read_discord'])assert.equal((await tool(name,{}, {token:secret})).status,403,name);
- assert.equal((await req('/mcp',{id:1,method:'events/subscribe',params:{}},{token:secret})).status,403);
+ const deniedSubscription=await req('/mcp',{id:1,method:'events/subscribe',params:{}},{token:secret});
+ assert.equal(deniedSubscription.status,200);assert.equal(deniedSubscription.data.error.code,-32017);assert.equal(deniedSubscription.data.error.data.reason,'wake_token_cannot_subscribe');
  assert.equal((await req('/api/accounts',null,{who:'member'})).status,403);
  assert.equal((await req('/api/audit',null,{who:'member'})).status,403);
  assert.equal((await req('/api/tokens',null,{who:'member'})).data.tokens.length,1);

@@ -95,9 +95,12 @@ async function saveInbox(db,dot,owner,data,eventIds){
 }
 async function subscriptionFilter(db,owner,args={}){
  if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(k=>!['dot_id','account_binding'].includes(k)))throw error('Invalid event filters.');
- if(Object.hasOwn(args,'account_binding')&&args.account_binding!=='acct_'+await hash(owner))throw error('Wrong connected account. Use the connection matching get_wake_status account_binding.',-32016);
+ if(Object.hasOwn(args,'account_binding')&&args.account_binding!=='acct_'+await hash(owner))throw error('Wrong connected account. Use the connection matching get_wake_status account_binding.',-32016,'wrong_connected_account');
  if(!Object.hasOwn(args,'dot_id'))return {dot:'',scope:'account'};
- const dot=name(args.dot_id);await owned(db,dot,owner);return {dot,scope:'handle'};
+ const dot=name(args.dot_id);const profile=await stmt(db,'SELECT owner FROM dots WHERE id=?',dot).first();
+ if(!profile)throw error('This handle is not registered. Register your account profile before subscribing.',-32016,'handle_not_registered');
+ if(profile.owner!==owner)throw error('Wrong connected account. Use the connection that owns the requested handle.',-32016,'wrong_connected_account');
+ return {dot,scope:'handle'};
 }
 async function wakeStatus(db,owner){
  const account=await stmt(db,'SELECT primary_dot FROM accounts WHERE user_id=?',owner).first();
@@ -567,7 +570,7 @@ export default {async fetch(request,env){
   if(!token)sameOrigin(request);
   if(!p)p=await readJSON(request);
   if(path==='/mcp'&&['events/subscribe','events/unsubscribe'].includes(p.method)){
-   action=p.method;if(token)throw error('This token can only send wakes.',-32001);
+   action=p.method;if(token)throw error('Wake tokens cannot manage subscriptions. Use the receiving account OAuth connection.',-32017,'wake_token_cannot_subscribe');
    await securityAudit(env,actor,action,'attempt');let value;
    if(p.method==='events/subscribe')value=await subscribe(env.DB,owner,p.params||{},env);
    else {const a=p.params||{};if(a.name!==EVENT)throw error('Unknown event.');const {dot,scope}=await subscriptionFilter(env.DB,owner,a.arguments);const callback=callbackURL(a.delivery?.url,env);await stmt(env.DB,'DELETE FROM subscriptions WHERE owner=? AND dot=? AND scope=? AND url=?',owner,dot,scope,callback).run();value={};}
@@ -586,7 +589,7 @@ export default {async fetch(request,env){
   if(limited){const retry=Math.max(...value.results.map(r=>r.retry_after_seconds));return new Response(JSON.stringify(path==='/mcp'?{jsonrpc:'2.0',id:p.id??null,error:{code:-32029,message:'Wake rate limit reached.',data:value}}:value),{status:429,headers:{'content-type':'application/json','cache-control':'no-store','retry-after':String(retry)}});}
   return path==='/mcp'?rpc({content:[{type:'text',text:JSON.stringify(value)}],isError:false}):json(value);
  }catch(e){
-  if(env.DB)try{await securityAudit(env,actor,action,e.code===-32001?'denied':'failed');}catch{console.warn(JSON.stringify({event:'security_audit_unavailable'}));}
+  if(env.DB)try{await securityAudit(env,actor,action,[-32001,-32016,-32017].includes(e.code)?'denied':'failed');}catch{console.warn(JSON.stringify({event:'security_audit_unavailable'}));}
   const applicationError=Number.isInteger(e.code)&&e.code<0;
   const message=applicationError?e.message:'Operation failed';const status=applicationError?(e.status||(e.code===-32001?(actor==='anonymous'?401:403):400)):503;
   if(path==='/mcp'&&p)return json({jsonrpc:'2.0',id:p.id??null,error:{code:applicationError?e.code:-32603,message,...(applicationError&&e.reason?{data:{reason:e.reason}}:{})}},status===400?200:status);

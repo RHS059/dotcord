@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-10 — Explicit wake receiver setup errors
+
+- Return structured JSON-RPC errors for a wrong connected account, missing handle, or wake-only token used for subscription management, instead of obscuring expected receiver-setup failures as HTTP authorization errors. Ownership checks still run before callback verification; no callback or account is reassigned.
+- Keep these authorization denials in the security audit and document how to distinguish connection mismatch from callback verification failure.
+- Validation: build, artifact validation, all 28 JavaScript test entrypoints and 18 Python tests passed with synthetic data and mocked external services. Independent review confirmed ownership isolation.
+- This change improves failure handling; it cannot select the receiving platform’s connection or create an absent live receiver automatically.
+
 ## 2026-10-10 — Account profiles and durable wake routing
 
 - Added a primary profile binding on the canonical account. Migration `0013_account_wake_identity.sql` backfills existing accounts only when they own exactly one Dot handle; it preserves ambiguous multi-handle accounts for explicit selection.
