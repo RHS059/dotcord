@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 const html = readFileSync('client-build/index.html', 'utf8');
 const script = html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/)[1];
 const fakeSecret = 'a1B2_fake_test_receiver_only_1234567890';
-let rows = [{id:'existing',name:'Existing integration',created:1791620000000,expires:'2099-01-01T00:00:00.000Z'}];
+let rows = [{id:'existing',name:'Existing integration',created:1791620000000,expires:'2099-01-01T00:00:00.000Z',recipient:{email:'member@example.test',is_self:true},can_revoke:true}];
 let dom, w, creates = 0, deletes = 0, copied = '', failCreate = false, failDelete = false, ownerMode = false, selectedAccount = '';
 async function until(fn) {for(let i=0;i<200;i++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('Receiver UI condition timed out');}
 const btn = text => [...w.document.querySelectorAll('button')].find(b=>b.textContent.trim()===text);
@@ -26,7 +26,7 @@ async function boot(unauthorized=false) {
      creates++;assert.deepEqual(JSON.parse(options.body),{name:'New integration',expires_in_days:30,...(selectedAccount?{account_id:selectedAccount}:{})});
      if(failCreate)return Response.json({error:'Creation rejected.'},{status:400});
      await new Promise(r=>setTimeout(r,30));
-     const receiver={id:'new',name:'New integration',created:1791620000000,expires:'2099-01-01T00:00:00.000Z'};if(!selectedAccount)rows=[receiver,...rows];return Response.json({receiver,secret:fakeSecret,recipient:{email:selectedAccount?'recipient@example.test':'member@example.test',is_self:!selectedAccount}});
+     const receiver={id:'new',name:'New integration',created:1791620000000,expires:'2099-01-01T00:00:00.000Z',recipient:{email:selectedAccount?'recipient@example.test':'member@example.test',is_self:!selectedAccount},can_revoke:!selectedAccount};rows=[receiver,...rows];return Response.json({receiver,secret:fakeSecret,recipient:{email:selectedAccount?'recipient@example.test':'member@example.test',is_self:!selectedAccount}});
    }
    if(options.method==='DELETE'){
      deletes++;assert.deepEqual(JSON.parse(options.body),{id:'new'});
@@ -61,11 +61,15 @@ w.history.pushState({},'','?tab=settings');w.dispatchEvent(new w.PopStateEvent('
 rows=rows.filter(t=>t.id!=='new');await boot();click(btn('Create Credential'));await until(()=>w.document.querySelector('#receiver-name'));assert.equal(w.document.querySelector('#receiver-expiry').value,'30');input('#receiver-name','New integration');await new Promise(r=>setTimeout(r,0));click(w.document.querySelector('[role=dialog] button[type=submit]'));
 w.history.pushState({},'','?tab=agents');w.dispatchEvent(new w.PopStateEvent('popstate'));await until(()=>w.document.querySelector('h1').textContent==='Agents');await new Promise(r=>setTimeout(r,60));assert.ok(!w.document.documentElement.outerHTML.includes(fakeSecret));
 w.history.pushState({},'','?tab=settings');w.dispatchEvent(new w.PopStateEvent('popstate'));await until(()=>w.document.querySelector('[aria-label="Revoke receiver New integration"]'));assert.equal(w.document.querySelector('#new-receiver-secret'),null);
-// The owner explicitly selects a recipient, but the credential never enters the issuer list.
+// The admin sees newly created recipient metadata immediately and after reload, without revoke authority.
 rows=rows.filter(t=>t.id!=='new');ownerMode=true;await boot();click(btn('Create Credential'));await until(()=>w.document.querySelector('#receiver-recipient'));
 const selector=w.document.querySelector('#receiver-recipient');assert.equal(selector.value,'');assert.equal(selector.options.length,2);assert.ok(selector.options[0].textContent.includes('Your signed-in account'));
 selector.value='target';selectedAccount='target';selector.dispatchEvent(new w.Event('change',{bubbles:true}));input('#receiver-name','New integration');await new Promise(r=>setTimeout(r,0));click(w.document.querySelector('[role=dialog] button[type=submit]'));await until(()=>w.document.querySelector('#new-receiver-secret'));
-assert.ok(w.document.querySelector('[role=dialog]').textContent.includes('Recipient: recipient@example.test'));assert.ok(w.document.querySelector('[role=dialog]').textContent.includes('will not appear in your list'));click(btn('Done'));await until(()=>!w.document.querySelector('[role=dialog]'));assert.equal(w.document.querySelector('[aria-label="Revoke receiver New integration"]'),null);
+assert.ok(w.document.querySelector('[role=dialog]').textContent.includes('Recipient: recipient@example.test'));assert.ok(w.document.querySelector('[role=dialog]').textContent.includes('appears in this admin list'));click(btn('Done'));await until(()=>!w.document.querySelector('[role=dialog]'));assert.equal(w.document.querySelector('[aria-label="Revoke receiver New integration"]'),null);
+const receiverSection=()=>w.document.querySelector('[aria-label="Wake receiver credentials"]');
+assert.ok(receiverSection().textContent.includes('New integration'));assert.ok(receiverSection().textContent.includes('recipient@example.test'));assert.ok(receiverSection().textContent.includes('This admin list'));
+assert.ok(!w.document.documentElement.outerHTML.includes(fakeSecret));
+await boot();assert.ok(receiverSection().textContent.includes('New integration'));assert.ok(receiverSection().textContent.includes('recipient@example.test'));assert.equal(w.document.querySelector('[aria-label="Revoke receiver New integration"]'),null);
 click(btn('Create Credential'));await until(()=>w.document.querySelector('#receiver-recipient'));assert.equal(w.document.querySelector('#receiver-recipient').value,'');click(btn('Cancel'));selectedAccount='';ownerMode=false;
 await boot(true);assert.equal(w.document.querySelector('[aria-label="Wake receiver credentials"]'),null);
 dom.window.close();console.log('PASS: receiver credential UI listing, expiry, one-time copy, failed create/revoke retry, duplicate-submit lock, secret disposal on close/navigation and outstanding responses. API mocked.');

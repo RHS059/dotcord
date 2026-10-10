@@ -379,7 +379,11 @@ async function accountSettings(request,env,account,actor){
 
 async function receiverManagement(request,env,account,actor){
  if(!['GET','POST','DELETE'].includes(request.method))return json({error:'Method not allowed'},405);
- if(request.method==='GET')return json({receivers:(await stmt(env.DB,'SELECT id,name,created,expires FROM receiver_credentials WHERE owner=? ORDER BY created DESC,id',account.user_id).all()).results});
+ if(request.method==='GET'){
+  const admin=account.role==='owner',allowed=new Set(configuredAccounts(env).map(row=>row.email));
+  const rows=(await stmt(env.DB,'SELECT rc.id,rc.name,rc.created,rc.expires,rc.owner,a.email FROM receiver_credentials rc JOIN accounts a ON a.user_id=rc.owner WHERE a.enabled=1 AND length(a.user_id)>0 AND (?=1 OR rc.owner=?) ORDER BY rc.created DESC,rc.id',admin?1:0,account.user_id).all()).results.filter(row=>allowed.has(row.email));
+  return json({receivers:rows.map(row=>({id:row.id,name:row.name,created:row.created,expires:row.expires,recipient:{email:row.email,is_self:row.owner===account.user_id},can_revoke:row.owner===account.user_id}))});
+ }
  sameOrigin(request);const a=await readJSON(request,2000);
  if(request.method==='DELETE'){
   if(Object.keys(a).some(k=>k!=='id'))throw error('Unexpected argument.');const id=text(a.id,100);
@@ -598,7 +602,8 @@ export default {async fetch(request,env){
   if(token){actor='token:'+token.id;owner={[GLOBAL]:true,token};if(!['/api/wake','/api/tool','/mcp'].includes(path))throw error('This token can only send wakes.',-32001);}
   else {account=await accountAccess(request,env);owner=account.user_id;actor=await accountActor(owner);}
   if(account?.auth_method==='google'&&path==='/mcp'&&!request.headers.get('origin'))throw error('Same-origin request required for Google sessions.',-32001);
-  await maintenance(env);
+  // Listing credentials must not prune or otherwise mutate them. Other traffic retains cleanup.
+  if(path!=='/api/receivers'||request.method!=='GET')await maintenance(env);
   if(path==='/api/auth/google-settings'){action='google_configuration';return await googleSettings(request,env,account,actor,baseEnv);}
   if(path==='/api/auth/link-host'){action='link_host';return await linkHost(request,env,actor);}
   if(path==='/api/invitations'){action='invitations';return await invitationManagement(request,env,account,actor);}

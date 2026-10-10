@@ -54,7 +54,7 @@ try{
  const bridge=await (await companionCall('receiver-platform-subject')).json();assert.ok(bridge.result?.id,JSON.stringify(bridge));assert.equal(relayCalls,1);
  events=[];await mention('recipient');assert.ok(events.some(e=>e.body.data.dot_id==='recipient'&&e.subscription===bridge.result.id),'Shared app mention reaches companion-registered callback');
  await management('alpha','DELETE',{id:paired.receiver.id});globalThis.fetch=external;
- // Owner creation targets canonical recipients; management authority remains self-only.
+ // Owner creation and metadata listing target allowed recipients; revocation stays self-only.
  const digest=async value=>Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))).toString('hex');
  const alphaId=await digest('alpha@example.test'),betaId=await digest('beta@example.test');
  assert.equal((await management('beta','POST',{name:'Denied target',account_id:alphaId})).status,403);
@@ -62,7 +62,28 @@ try{
  const selectedResponse=await management('alpha','POST',{name:'Selected recipient',account_id:betaId});assert.equal(selectedResponse.status,201);
  const selected=await selectedResponse.json();assert.equal(sql.prepare('SELECT owner FROM receiver_credentials WHERE id=?').get(selected.receiver.id).owner,'beta');
  assert.deepEqual(selected.recipient,{account_id:betaId,email:'beta@example.test',is_self:false});
+ const beforeList=sql.prepare('SELECT * FROM receiver_credentials ORDER BY id').all();
+ // Even a due cleanup must not mutate credentials during this read.
+ sql.prepare("UPDATE security_maintenance SET next_run=0 WHERE id='cleanup'").run();
+ const ownerList=(await (await management('alpha','GET')).json()).receivers;
+ assert.deepEqual(ownerList.find(r=>r.id===selected.receiver.id),{...selected.receiver,recipient:{email:'beta@example.test',is_self:false},can_revoke:false});
+ assert.ok(ownerList.some(r=>r.recipient.is_self&&r.can_revoke));
+ assert.deepEqual(sql.prepare('SELECT * FROM receiver_credentials ORDER BY id').all(),beforeList);
+ assert.ok(!JSON.stringify(ownerList).includes(selected.secret));
+ for(const row of ownerList){assert.deepEqual(Object.keys(row).sort(),['can_revoke','created','expires','id','name','recipient']);assert.deepEqual(Object.keys(row.recipient).sort(),['email','is_self']);}
+ const memberList=(await (await management('beta','GET')).json()).receivers;
+ assert.ok(memberList.every(r=>r.recipient.email==='beta@example.test'&&r.can_revoke));
+ // Orphaned, uninitialized, disabled, and removed accounts are never admin-list recipients.
+ for(const [email,userId] of [['outside@example.test','outside'],['new@example.test',null],['empty@example.test','']]){
+  sql.prepare('INSERT OR IGNORE INTO accounts (email,user_id,role,enabled) VALUES (?,?,?,1)').run(email,userId,'member');
+ }
+ for(const id of ['outside','orphan',''])sql.prepare('INSERT INTO receiver_credentials (id,owner,name,secret_hash,created,expires) VALUES (?,?,?,?,?,?)').run('hidden-'+id,id,'Hidden','hash-'+id,new Date().toISOString(),'2099-01-01T00:00:00.000Z');
+ assert.ok(!(await (await management('alpha','GET')).json()).receivers.some(r=>r.id.startsWith('hidden-')));
+ sql.prepare('UPDATE accounts SET enabled=0 WHERE user_id=?').run('beta');
  assert.ok(!(await (await management('alpha','GET')).json()).receivers.some(r=>r.id===selected.receiver.id));
+ sql.prepare('UPDATE accounts SET enabled=1 WHERE user_id=?').run('beta');
+ const configured=env.AUTHORIZED_ACCOUNTS;env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'alpha@example.test',role:'owner'}]);
+ assert.ok(!(await (await management('alpha','GET')).json()).receivers.some(r=>r.id===selected.receiver.id));env.AUTHORIZED_ACCOUNTS=configured;
  assert.ok((await (await management('beta','GET')).json()).receivers.some(r=>r.id===selected.receiver.id));
  assert.equal((await management('alpha','DELETE',{id:selected.receiver.id})).status,403);
  const audit=sql.prepare("SELECT actor,resource FROM security_audit WHERE action='receiver_create' AND outcome='success' AND resource LIKE ?").get(selected.receiver.id+'%');
