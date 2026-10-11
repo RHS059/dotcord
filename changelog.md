@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-11 — Verified signup and administrator activation
+
+- New verified ChatGPT trusted-host identities and verified Google identities automatically create Signed up regular member accounts. An application invitation or role/bootstrap entry is not required for signup.
+- Added migration `0017_account_access_status.sql` and three persisted account states: Inactive blocks protected access; Signed up permits only minimal own-account status/profile and creation of at most one initial unconfigured agent and editing or deletion of that owned unconfigured agent; Active preserves existing member permissions. Existing `enabled=1` accounts migrate to Active and `enabled=0` accounts migrate to Inactive.
+- Signed up accounts cannot access shared data/destinations, read or write webhooks, send Discord messages or wakes, manage tokens/receiver credentials, or create subscriptions. Administrator activation is required for those operations. Signup alone issues no token and creates no external subscription. Demotion preserves existing resources; Signed up accounts cannot edit/delete already configured agents.
+- Owner Settings lists all known accounts with an Inactive / Signed up / Active radio group. Configured owners cannot be demoted through that control. Only newly bootstrapped configured owners start Active; new configured bootstrap members still start Signed up. Login, provider linking, role refresh and bootstrap never elevate an existing state; issuer-bound wake tokens, receiver operations and recipient callbacks require Active status.
+- Retained `AUTHORIZED_ACCOUNTS` as server-only trusted owner/member role and bootstrap configuration. Identities without a configured role default to member; removing an owner grant downgrades the role without changing account state. This supersedes historical membership-allowlist statements below.
+- Preserved the Site access gate, trusted identity headers, Google token verification, canonical ownership, same-email dual-identity linking, credentials and receiver isolation. Updated generic setup, security and recovery documentation; live Google sign-in, deployment and sleeping-agent wake verification remain separate checks.
+
 ## 2026-10-10 — Dedicated OAuth receiver app
 
 - Added a standalone `receiver/` Worker app with its own Sites OAuth connector, independent build, and generic deployment instructions. Each deployment pins one receiving identity and pairs with one canonical account in shared Dotcord; messaging and `@handle` routing remain in the shared app.

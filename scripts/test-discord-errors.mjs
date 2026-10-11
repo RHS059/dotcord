@@ -1,3 +1,4 @@
+import {seedActiveAccounts} from './helpers/accounts.mjs';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync,readdirSync} from 'node:fs';
@@ -7,6 +8,7 @@ const sql=new DatabaseSync(':memory:');
 for(const file of readdirSync(new URL('../drizzle',import.meta.url)).filter(f=>f.endsWith('.sql')).sort())sql.exec(readFileSync(new URL('../drizzle/'+file,import.meta.url),'utf8').replaceAll('--> statement-breakpoint',''));
 const DB={async batch(statements){sql.exec('BEGIN');try{const results=[];for(const statement of statements)results.push(await statement.run());sql.exec('COMMIT');return results;}catch(e){sql.exec('ROLLBACK');throw e;}},prepare(query){return {bind(...args){return {first:async()=>sql.prepare(query).get(...args)||null,all:async()=>({results:sql.prepare(query).all(...args)}),run:async()=>sql.prepare(query).run(...args)}}}}};
 const env={DB,AUTHORIZED_ACCOUNTS:JSON.stringify([{email:'owner@example.test',role:'owner'}])};
+seedActiveAccounts(sql,env);
 async function tool(name,args={}){
  // Independent cases; rate limiting has its own concurrency and boundary tests.
  sql.exec('DELETE FROM wake_limits');
@@ -76,8 +78,8 @@ try{
   assert.match((await tool('register_dot',{dot_id:'sender',discord_id:first.id,agent_type:'agent'})).error,/other category/);
   assert.equal(sql.prepare('SELECT discord_id FROM dots WHERE id=?').get('sender').discord_id,second.id);
   assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM subscriptions').get().n,1);
-  assert.deepEqual(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r=>r.name),['account_identities','account_onboarding','accounts','api_tokens','auth_sessions','discords','dots','google_oauth_settings','invitations','oauth_states','receiver_credentials','security_audit','security_maintenance','subscriptions','temporary_inbox','wake_limits','wake_tests']);
-  for(const table of ['account_identities','account_onboarding','accounts','api_tokens','auth_sessions','discords','dots','google_oauth_settings','invitations','oauth_states','receiver_credentials','security_audit','security_maintenance','subscriptions','temporary_inbox','wake_limits','wake_tests']){
+  assert.deepEqual(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r=>r.name),['account_identities','account_onboarding','accounts','api_tokens','auth_sessions','discords','dots','google_oauth_settings','invitations','oauth_states','receiver_credentials','receiver_lineages','security_audit','security_maintenance','subscriptions','temporary_inbox','wake_limits','wake_tests']);
+  for(const table of ['account_identities','account_onboarding','accounts','api_tokens','auth_sessions','discords','dots','google_oauth_settings','invitations','oauth_states','receiver_credentials','receiver_lineages','security_audit','security_maintenance','subscriptions','temporary_inbox','wake_limits','wake_tests']){
     const data=JSON.stringify(sql.prepare('SELECT * FROM '+table).all());
     for(const ephemeral of ['uncertain body','timed out','not in your channel','wrong source'])assert.ok(!data.includes(ephemeral));
   }

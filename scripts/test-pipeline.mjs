@@ -1,4 +1,5 @@
 // Local integration evidence only: real Worker + migrated SQLite; all remote I/O is mocked.
+import {seedActiveAccounts} from './helpers/accounts.mjs';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync, readdirSync} from 'node:fs';
@@ -31,7 +32,8 @@ const env = {DB, AUTHORIZED_ACCOUNTS: JSON.stringify([
   {email: 'owner@example.test', role: 'owner'},
   {email: 'member@example.test', role: 'member'},
 ])};
-const emails = {owner: 'owner@example.test', member: 'member@example.test', outsider: 'outsider@example.test'};
+seedActiveAccounts(sql,env);
+const emails = {owner: 'owner@example.test', member: 'member@example.test', disabled: 'disabled@example.test'};
 async function rpc(owner, method, params = {}) {
  // Independent functional case; cooldown behavior is covered by test-wake-security.mjs.
  sql.exec('DELETE FROM wake_limits');
@@ -167,8 +169,9 @@ try {
   assert.equal(events.at(-1).event.data.channel_url, `https://discord.com/channels/${guild}/${channel}`);
   assert.equal(events.at(-1).event.data.discord_id, receiverConnection.id, 'Thread mention retains recipient parent connection scope');
 
+  sql.prepare('INSERT INTO accounts(email,user_id,role,enabled) VALUES (?,?,?,0)').run('disabled@example.test','disabled','member');
   const callsBeforeACL = calls.length;
-  for (const owner of [null, 'outsider']) {
+  for (const owner of [null, 'disabled']) {
     assert.ok((await tool(owner, 'post_to_discord', {dot_id: 'sender', text: '@receiver'})).error);
     assert.ok((await tool(owner, 'read_discord', {dot_id: 'sender', limit: 7})).error);
   }
@@ -208,7 +211,7 @@ try {
   assert.equal(disabled.sent, true);
   assert.deepEqual(deliveryOnly(disabled.mention_delivery.results), [{handle: 'receiver', status: 'inactive', attempts: 0}]);
   assert.equal(events.length, beforeDisabled);
-  sql.prepare('UPDATE accounts SET enabled=1 WHERE user_id=?').run('member');
+  sql.prepare("UPDATE accounts SET enabled=1,status='active' WHERE user_id=?").run('member');
   sql.prepare('UPDATE subscriptions SET expires=? WHERE id=?').run('2000-01-01T00:00:00.000Z', subscription.result.id);
   const expired = await success('owner', 'post_to_discord', {dot_id: 'sender', text: '@receiver expired subscription'});
   assert.deepEqual(deliveryOnly(expired.mention_delivery.results), [{handle: 'receiver', status: 'not_subscribed', attempts: 0}]);
@@ -220,7 +223,7 @@ try {
   assert.deepEqual(deliveryOnly(gone.mention_delivery.results), [{handle: 'receiver', status: 'gone', attempts: 1}]);
   assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM subscriptions').get().n, 0);
 
-  assert.deepEqual(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(x => x.name), ['account_identities', 'account_onboarding', 'accounts', 'api_tokens', 'auth_sessions', 'discords', 'dots', 'google_oauth_settings', 'invitations', 'oauth_states', 'receiver_credentials', 'security_audit', 'security_maintenance', 'subscriptions', 'temporary_inbox', 'wake_limits', 'wake_tests']);
+  assert.deepEqual(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(x => x.name), ['account_identities', 'account_onboarding', 'accounts', 'api_tokens', 'auth_sessions', 'discords', 'dots', 'google_oauth_settings', 'invitations', 'oauth_states', 'receiver_credentials', 'receiver_lineages', 'security_audit', 'security_maintenance', 'subscriptions', 'temporary_inbox', 'wake_limits', 'wake_tests']);
   for (const table of ['accounts', 'api_tokens', 'discords', 'dots', 'subscriptions']) {
     assert.ok(!JSON.stringify(sql.prepare('SELECT * FROM ' + table).all()).includes(content), 'No posted content persisted');
   }

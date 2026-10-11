@@ -1,4 +1,5 @@
 // Real Worker and transactional SQLite; Discord and MCP receivers are synthetic.
+import {seedActiveAccounts} from './helpers/accounts.mjs';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync,readdirSync} from 'node:fs';
@@ -8,6 +9,7 @@ const sql=new DatabaseSync(':memory:');
 for(const f of readdirSync('drizzle').filter(f=>f.endsWith('.sql')).sort())sql.exec(readFileSync('drizzle/'+f,'utf8').replaceAll('--> statement-breakpoint',''));
 const DB={batch(items){sql.exec('BEGIN');try{const out=items.map(i=>i.run());sql.exec('COMMIT');return out;}catch(e){sql.exec('ROLLBACK');throw e;}},prepare(q){return{bind(...args){return{first:()=>sql.prepare(q).get(...args)||null,all:()=>({results:sql.prepare(q).all(...args)}),run:()=>sql.prepare(q).run(...args)}}}}};
 const env={DB,AUTHORIZED_ACCOUNTS:JSON.stringify(['admin','aella','halcyon'].map(id=>({email:id+'@example.test',role:id==='admin'?'owner':'member'})))};
+seedActiveAccounts(sql,env);
 const digest=s=>createHash('sha256').update(s).digest('hex');
 async function req(path,body,who='admin',options={}){
  const headers={'content-type':'application/json',origin:'https://shared.test'};

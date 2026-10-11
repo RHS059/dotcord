@@ -1,4 +1,5 @@
 // Real Worker + SQLite. All Discord/callback traffic mocked; no live posts.
+import {seedActiveAccounts} from './helpers/accounts.mjs';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync,readdirSync} from 'node:fs';
@@ -7,6 +8,7 @@ const sql=new DatabaseSync(':memory:');
 for(const f of readdirSync('drizzle').filter(f=>f.endsWith('.sql')).sort())sql.exec(readFileSync('drizzle/'+f,'utf8').replaceAll('--> statement-breakpoint',''));
 const DB={async batch(items){const results=[];for(const i of items)results.push(await i.run());return results;},prepare(q){return {bind(...args){return {first:async()=>sql.prepare(q).get(...args)||null,all:async()=>({results:sql.prepare(q).all(...args)}),run:async()=>sql.prepare(q).run(...args)}}}}};
 const env={DB,AUTHORIZED_ACCOUNTS:JSON.stringify([{email:'owner@example.test',role:'owner'},{email:'member@example.test',role:'member'}])};
+seedActiveAccounts(sql,env);
 async function request(name,args={},options={}){
  // Independent cases; rate limiting has its own concurrency and boundary tests.
  sql.exec('DELETE FROM wake_limits');
@@ -37,13 +39,14 @@ try{
   assert.equal(result.sent,true);assert.equal(result.mention_delivery.results[0].status,'accepted');assert.ok(!JSON.stringify(result).includes(hook));
  }
  assert.equal(posts,2);assert.equal(callbacks,2);assert.equal(snapshot(),before,'Posting does not transfer ownership, alter configuration or subscriptions');
- for(const options of [{id:null},{id:'outsider'},{id:'changed',email:'member@example.test'},{id:'member',origin:'https://other.test'}])assert.ok((await request('post_to_discord',{dot_id:'selected_agent',text:'@receiver hello'},options)).error);
+ sql.prepare('INSERT INTO accounts(email,user_id,role,enabled) VALUES (?,?,?,0)').run('disabled@example.test','disabled','member');
+ for(const options of [{id:null},{id:'disabled'},{id:'changed',email:'member@example.test'},{id:'member',origin:'https://other.test'}])assert.ok((await request('post_to_discord',{dot_id:'selected_agent',text:'@receiver hello'},options)).error);
  sql.prepare('UPDATE accounts SET enabled=0 WHERE user_id=?').run('member');
  assert.ok((await request('post_to_discord',{dot_id:'selected_agent',text:'@receiver hello'},{id:'member'})).error);
- sql.prepare('UPDATE accounts SET enabled=1 WHERE user_id=?').run('member');
+ sql.prepare("UPDATE accounts SET enabled=1,status='active' WHERE user_id=?").run('member');
  assert.ok((await request('post_to_discord',{dot_id:'missing',text:'@receiver hello'},{id:'member'})).error);
  const changes=[['set_webhook',{dot_id:'selected_agent',webhook_url:hook}],['set_discord',{dot_id:'selected_agent',discord_id:destination.id}],['update_agent',{dot_id:'selected_agent',handle:'changed',discord_id:destination.id}],['delete_agent',{dot_id:'selected_agent'}],['update_discord',{discord_id:destination.id,name:'Changed'}],['delete_discord',{discord_id:destination.id}],['read_discord',{dot_id:'selected_agent'}],['send_mention',{sender:'selected_agent',message_id:'forged',text:'@receiver hello'}],['send_mention',{sender:'selected_agent',message_id:'forged',text:'@receiver hello',verifiedSource:{agent:{id:'selected_agent'}}}]];
  for(const [name,args] of changes)assert.ok((await request(name,args,{id:'member'})).error,name+' must retain previous permissions');
  assert.equal(posts,2,'Rejected requests never post');assert.equal(callbacks,2);assert.equal(snapshot(),before);
- console.log('PASS: browser/MCP authorized cross-account sends use selected saved webhook and confirmed-post mentions; thread verified; login, allowlist, identity, enabled-account and same-origin guards retained; management/read/direct-mention permissions unchanged; no owner/subscription/config changes or credential leak. Network mocked.');
+ console.log('PASS: browser/MCP authorized cross-account sends use selected saved webhook and confirmed-post mentions; thread verified; login, identity, persisted enabled-account and same-origin guards retained; management/read/direct-mention permissions unchanged; no owner/subscription/config changes or credential leak. Network mocked.');
 }finally{globalThis.fetch=original;sql.close();}

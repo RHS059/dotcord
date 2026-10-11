@@ -1,5 +1,6 @@
 // Actual Worker and migrated SQLite. Google identity/session fixtures are synthetic;
 // cryptographic OIDC validation is covered separately by test-google-auth.mjs.
+import {seedActiveAccounts} from './helpers/accounts.mjs';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync,readdirSync} from 'node:fs';
@@ -10,6 +11,7 @@ for(const f of readdirSync('drizzle').filter(f=>f.endsWith('.sql')).sort())sql.e
 const DB={batch(items){sql.exec('BEGIN');try{const out=items.map(i=>i.run());sql.exec('COMMIT');return out;}catch(e){sql.exec('ROLLBACK');throw e;}},prepare(q){return{bind(...args){return{first:()=>sql.prepare(q).get(...args)||null,all:()=>({results:sql.prepare(q).all(...args)}),run:()=>sql.prepare(q).run(...args)}}}}};
 const emails=['admin','agent_one','agent_two','fresh','legacy','other'];
 const env={DB,AUTHORIZED_ACCOUNTS:JSON.stringify(emails.map(id=>({email:id+'@example.test',role:id==='admin'?'owner':'member'})))};
+seedActiveAccounts(sql,env);
 const digest=s=>createHash('sha256').update(s).digest('hex');
 async function req(path,body,{host,cookie,origin='https://shared.test',method}={}){
  const headers={'content-type':'application/json'};
@@ -73,7 +75,12 @@ try{
  assert.equal(sql.prepare('SELECT owner FROM dots WHERE id=?').get('legacy_handle').owner,'legacy');
  assert.equal((await tool('set_webhook',{dot_id:'legacy_handle',webhook_url:'https://discord.com/api/webhooks/434567890123456789/'+'x'.repeat(60)},{cookie:fresh.cookie})).status,403);
  assert.equal((await googleLogin('legacy-google','other@example.test')).status,403,'Stable Google subject cannot move to another allowed email');
- assert.equal((await googleLogin('rogue','unknown@example.test')).status,403,'Verified email still requires allowlist');
+ const unknown=await googleLogin('new-google-subject','unknown@example.test');assert.equal(unknown.status,303,'A new verified Google identity signs up without a configured grant');assert.ok(unknown.cookie);
+ assert.deepEqual({...sql.prepare('SELECT user_id,role,status FROM accounts WHERE email=?').get('unknown@example.test')},{user_id:'google:new-google-subject',role:'member',status:'signed_up'});
+ const signedUp=await req('/api/account',null,{cookie:unknown.cookie});assert.equal(signedUp.status,200);assert.equal(signedUp.data.account_status,'signed_up');assert.equal(signedUp.data.can_manage_accounts,false);
+ assert.equal((await req('/api/accounts',null,{cookie:unknown.cookie})).status,403,'Automatic Google signup never grants owner authority');
+ assert.equal((await req('/api/accounts',{account_id:digest('unknown@example.test'),status:'active'},host('admin'))).status,200);
+ const activated=await req('/api/account',null,{cookie:unknown.cookie});assert.equal(activated.status,200);assert.equal(activated.data.account_status,'active');assert.equal(activated.data.can_manage_accounts,false);
  // Cookie authentication must never inherit the native header exemption from Origin checks.
  assert.equal((await tool('register_dot',{dot_id:'csrf_google'},{cookie:fresh.cookie,origin:null})).status,403);
  assert.equal((await req('/mcp',{jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'register_dot',arguments:{dot_id:'csrf_google'}}},{cookie:fresh.cookie,origin:null})).status,403);
@@ -118,14 +125,27 @@ try{
  assert.equal(oldInvitation.status,201);const oldInvite=new URL(oldInvitation.data.url).hash.slice('#invite='.length);
  const overridden=await req('/api/onboarding',{action:'accept',invite:oldInvite,dot_id:'agent_two_chosen'},host('agent_two'));
  assert.equal(overridden.status,201);assert.equal(overridden.data.dot_id,'agent_two_chosen');assert.equal(sql.prepare('SELECT id FROM dots WHERE id=?').get('old_suggestion'),undefined);
- // Current allowlist and disabled flag apply even to a valid Google browser session.
- const savedAllowlist=env.AUTHORIZED_ACCOUNTS;
- env.AUTHORIZED_ACCOUNTS=JSON.stringify(JSON.parse(savedAllowlist).filter(a=>a.email!=='fresh@example.test'));
- assert.equal((await req('/api/account',null,{cookie:fresh.cookie})).status,401);
- env.AUTHORIZED_ACCOUNTS=savedAllowlist;
+ // Role configuration is optional for members; persisted disablement still blocks valid sessions.
+ const savedRoles=env.AUTHORIZED_ACCOUNTS;
+ env.AUTHORIZED_ACCOUNTS=JSON.stringify(JSON.parse(savedRoles).filter(a=>a.email!=='fresh@example.test'));
+ const unconfigured=await req('/api/account',null,{cookie:fresh.cookie});assert.equal(unconfigured.status,200);assert.equal(unconfigured.data.can_manage_accounts,false);
+ assert.equal((await req('/api/accounts',null,{cookie:fresh.cookie})).status,403);
+ env.AUTHORIZED_ACCOUNTS=savedRoles;
  sql.prepare('UPDATE accounts SET enabled=0 WHERE email=?').run('fresh@example.test');
  assert.equal((await req('/api/account',null,{cookie:fresh.cookie})).status,401);
- sql.prepare('UPDATE accounts SET enabled=1 WHERE email=?').run('fresh@example.test');
+ assert.equal((await req('/api/account',null,host('fresh'))).status,401);
+ assert.equal((await googleLogin('fresh-subject','fresh@example.test')).status,403,'Verified sign-in must not reactivate a disabled account');
+ const disabledAccountCount=sql.prepare('SELECT COUNT(*) n FROM accounts').get().n;
+ assert.equal((await googleLogin('fresh-subject','changed-fresh@example.test')).status,403,'A changed email cannot split a disabled Google account');
+ assert.equal(sql.prepare('SELECT COUNT(*) n FROM accounts').get().n,disabledAccountCount);
+ assert.equal(sql.prepare('SELECT email FROM accounts WHERE email=?').get('changed-fresh@example.test'),undefined);
+ assert.equal((await googleLogin('different-fresh-subject','fresh@example.test')).status,403,'A different Google subject cannot reclaim a disabled email');
+ assert.equal(sql.prepare('SELECT user_id FROM account_identities WHERE provider=? AND subject=?').get('google','different-fresh-subject'),undefined);
+ assert.equal(sql.prepare('SELECT enabled FROM accounts WHERE email=?').get('fresh@example.test').enabled,0);
+ assert.equal((await req('/api/accounts',{account_id:digest('fresh@example.test'),enabled:true},host('admin'))).status,200);
+ assert.equal((await req('/api/account',null,{cookie:fresh.cookie})).status,200);
+ const reenabled=await googleLogin('fresh-subject','fresh@example.test');assert.equal(reenabled.status,303);assert.ok(reenabled.cookie);
+ assert.equal((await req('/api/account',null,{cookie:reenabled.cookie})).status,200);
  const logout=await req('/auth/logout',{}, {cookie:fresh.cookie});assert.equal(logout.status,200);
  assert.equal((await req('/api/account',null,{cookie:fresh.cookie,...host('admin')})).status,401,'Revoked session cannot silently fall back to host administrator');
  // Owner-saved configuration drives a complete signed OIDC flow without hosting credentials.
@@ -177,5 +197,5 @@ try{
 
  const audit=JSON.stringify(sql.prepare('SELECT * FROM security_audit').all());
  for(const secret of [dbSecret,'rotated-secret',fresh.cookie.split('=')[1],agent_one.cookie.split('=')[1],accepted.data.secret,admitted[0].data.secret,invite])assert.equal(audit.includes(secret),false);
- console.log('PASS Google integration: signed synthetic env/DB callback, settings rotation and in-flight invalidation, fallback, identity isolation/linking, canonical native MCP ownership, cookie CSRF/expiry/revocation, current allowlist, recipient-chosen handles, collision/replay/concurrent initial-token safety. External provider mocked.');
+ console.log('PASS Google integration: signed synthetic env/DB callback, settings rotation and in-flight invalidation, fallback, identity isolation/linking, canonical native MCP ownership, cookie CSRF/expiry/revocation, signed-up member signup, owner activation and persisted disablement, recipient-chosen handles, collision/replay/concurrent initial-token safety. External provider mocked.');
 }finally{globalThis.fetch=originalFetch;sql.close();}

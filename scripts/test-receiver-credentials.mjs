@@ -54,7 +54,7 @@ try{
  const bridge=await (await companionCall('receiver-platform-subject')).json();assert.ok(bridge.result?.id,JSON.stringify(bridge));assert.equal(relayCalls,1);
  events=[];await mention('recipient');assert.ok(events.some(e=>e.body.data.dot_id==='recipient'&&e.subscription===bridge.result.id),'Shared app mention reaches companion-registered callback');
  await management('alpha','DELETE',{id:paired.receiver.id});globalThis.fetch=external;
- // Owner creation and metadata listing target allowed recipients; revocation stays self-only.
+ // Owner creation and metadata listing target active recipients; revocation stays owner-only.
  const digest=async value=>Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))).toString('hex');
  const alphaId=await digest('alpha@example.test'),betaId=await digest('beta@example.test');
  assert.equal((await management('beta','POST',{name:'Denied target',account_id:alphaId})).status,403);
@@ -73,17 +73,20 @@ try{
  for(const row of ownerList){assert.deepEqual(Object.keys(row).sort(),['can_revoke','created','expires','id','name','recipient']);assert.deepEqual(Object.keys(row.recipient).sort(),['email','is_self']);}
  const memberList=(await (await management('beta','GET')).json()).receivers;
  assert.ok(memberList.every(r=>r.recipient.email==='beta@example.test'&&!r.can_revoke));
- // Orphaned, uninitialized, disabled, and removed accounts are never admin-list recipients.
+ // Orphaned, uninitialized and persisted-disabled accounts are never admin-list recipients.
  for(const [email,userId] of [['outside@example.test','outside'],['new@example.test',null],['empty@example.test','']]){
   sql.prepare('INSERT OR IGNORE INTO accounts (email,user_id,role,enabled) VALUES (?,?,?,1)').run(email,userId,'member');
  }
+ sql.prepare('UPDATE accounts SET enabled=0 WHERE user_id=?').run('outside');
  for(const id of ['outside','orphan',''])sql.prepare('INSERT INTO receiver_credentials (id,owner,name,secret_hash,created,expires) VALUES (?,?,?,?,?,?)').run('hidden-'+id,id,'Hidden','hash-'+id,new Date().toISOString(),'2099-01-01T00:00:00.000Z');
  assert.ok(!(await (await management('alpha','GET')).json()).receivers.some(r=>r.id.startsWith('hidden-')));
  sql.prepare('UPDATE accounts SET enabled=0 WHERE user_id=?').run('beta');
  assert.ok(!(await (await management('alpha','GET')).json()).receivers.some(r=>r.id===selected.receiver.id));
- sql.prepare('UPDATE accounts SET enabled=1 WHERE user_id=?').run('beta');
+ sql.prepare("UPDATE accounts SET enabled=1,status='active' WHERE user_id=?").run('beta');
  const configured=env.AUTHORIZED_ACCOUNTS;env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'alpha@example.test',role:'owner'}]);
- assert.ok(!(await (await management('alpha','GET')).json()).receivers.some(r=>r.id===selected.receiver.id));env.AUTHORIZED_ACCOUNTS=configured;
+ assert.ok((await (await management('alpha','GET')).json()).receivers.some(r=>r.id===selected.receiver.id),'Unconfigured active members remain visible to the owner');
+ assert.equal((await receiver(selected.secret,'status')).status,200,'Role configuration removal does not revoke an active member receiver');
+ assert.equal((await management('beta','POST',{name:'No elevation',account_id:alphaId})).status,403);env.AUTHORIZED_ACCOUNTS=configured;
  assert.ok((await (await management('beta','GET')).json()).receivers.some(r=>r.id===selected.receiver.id));
  assert.equal((await management('beta','DELETE',{id:selected.receiver.id})).status,403);
  const audit=sql.prepare("SELECT actor,resource FROM security_audit WHERE action='receiver_create' AND outcome='success' AND resource LIKE ?").get(selected.receiver.id+'%');
@@ -94,8 +97,11 @@ try{
  assert.equal((await management('alpha','POST',{name:'Invalid',account_id:'beta'})).status,400);
  assert.equal((await management('alpha','POST',{name:'Unknown',account_id:'0'.repeat(64)})).status,403);
  assert.equal((await management('alpha','POST',{name:'Uninitialized',account_id:await digest('new@example.test')})).status,403);
- sql.prepare('UPDATE accounts SET enabled=0 WHERE user_id=?').run('beta');assert.equal((await management('alpha','POST',{name:'Disabled',account_id:betaId})).status,403);sql.prepare('UPDATE accounts SET enabled=1 WHERE user_id=?').run('beta');
- env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'alpha@example.test',role:'owner'}]);assert.equal((await management('alpha','POST',{name:'Removed',account_id:betaId})).status,403);
+ sql.prepare('UPDATE accounts SET enabled=0 WHERE user_id=?').run('beta');assert.equal((await management('alpha','POST',{name:'Disabled',account_id:betaId})).status,403);sql.prepare("UPDATE accounts SET enabled=1,status='active' WHERE user_id=?").run('beta');
+ env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'alpha@example.test',role:'owner'}]);
+ const unconfiguredResponse=await management('alpha','POST',{name:'Unconfigured member',account_id:betaId});assert.equal(unconfiguredResponse.status,201);
+ const unconfiguredReceiver=await unconfiguredResponse.json();assert.equal(sql.prepare('SELECT owner FROM receiver_credentials WHERE id=?').get(unconfiguredReceiver.receiver.id).owner,'beta');
+ assert.equal((await management('alpha','DELETE',{id:unconfiguredReceiver.receiver.id})).status,200);
  env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'alpha@example.test',role:'owner'},{email:'beta@example.test',role:'member'}]);
  for(let i=1;i<20;i++)assert.equal((await management('alpha','POST',{name:'Target limit '+i,account_id:betaId})).status,201);
  assert.equal((await management('alpha','POST',{name:'Target full',account_id:betaId})).status,400);
@@ -106,6 +112,11 @@ try{
  assert.ok(sql.prepare('SELECT id FROM subscriptions WHERE receiver_id=?').get(selected.receiver.id),'Revocation retains the inactive platform registration');
  assert.ok(sql.prepare('SELECT id FROM receiver_credentials WHERE id=?').get(untouched.receiver.id));
  env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'alpha@example.test',role:'member'},{email:'beta@example.test',role:'member'}]);assert.equal((await management('alpha','POST',{name:'Demoted issuer',account_id:betaId})).status,403);
- const fourth=await (await management('alpha','POST',{name:'Current access'})).json();env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'beta@example.test',role:'member'}]);assert.equal((await receiver(fourth.secret,'status')).status,401);
- console.log('PASS: receiver credential issuance, hash-only storage, owner isolation, restricted authority, namespace isolation, mention delivery, expiry/revocation/readiness, in-flight revocation, current allowlist. Synthetic callbacks only.');
+ const fourth=await (await management('alpha','POST',{name:'Current access'})).json();env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'beta@example.test',role:'member'}]);
+ assert.equal((await receiver(fourth.secret,'status')).status,200,'Unconfigured active accounts retain their receiver credentials');
+ assert.equal((await management('alpha','POST',{name:'No implicit owner',account_id:betaId})).status,403);
+ sql.prepare('UPDATE accounts SET enabled=0 WHERE user_id=?').run('alpha');
+ assert.equal((await receiver(fourth.secret,'status')).status,401);assert.equal((await management('alpha','GET')).status,401);
+ assert.equal(sql.prepare('SELECT enabled FROM accounts WHERE user_id=?').get('alpha').enabled,0);
+ console.log('PASS: receiver credential issuance, hash-only storage, owner isolation, restricted authority, namespace isolation, mention delivery, expiry/revocation/readiness, in-flight revocation, automatic member access and persisted disablement. Synthetic callbacks only.');
 }finally{globalThis.fetch=originalFetch;sql.close();}

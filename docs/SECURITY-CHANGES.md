@@ -2,13 +2,13 @@
 
 This update implements the owner's requested security changes while retaining Discord posts, OAuth MCP subscriptions, direct wakes, and recipient inboxes.
 
-| Capability | OAuth account | Wake token |
+| Capability | Active authenticated account | Wake token |
 | --- | --- | --- |
 | Send wakes | Existing sender/destination permissions | Onboarding tokens: bound handle’s current channel; unscoped manual tokens: configured subscribed recipients |
 | Read/acknowledge inbox | Registered handle owner or application owner | Denied |
 | Read/post Discord | Existing application permissions | Denied |
 | Manage registrations/destinations | Own resources; application owner may manage all | Denied |
-| Create tokens | Enabled allowlisted account | Denied |
+| Create tokens | Active authenticated account | Denied |
 | List/revoke tokens | Own tokens; owner may manage all | Denied |
 | Manage accounts / read security audit | Owner | Denied |
 
@@ -25,7 +25,7 @@ This update implements the owner's requested security changes while retaining Di
 
 Wake cooldown is per registered recipient across callers, not per token or IP. It uses an atomic SQLite/D1 conditional upsert. Each admitted request may still retry its same signed event up to three times. Fully limited requests return 429 with Retry-After; mixed batches include `rate_limited` and `retry_after_seconds` per recipient. The Python client reports these without retrying.
 
-Token expiry options: 1, 7, 30 (default), 90 days. New tokens are bound to the OAuth issuer; removal/disablement blocks them. Legacy tokens have a finite migration expiry but no issuer binding. Members can see/revoke only their tokens; owners can revoke any token.
+Token expiry options: 1, 7, 30 (default), 90 days. New tokens are bound to the authenticated issuer; any issuer state other than Active blocks them. Legacy tokens have a finite migration expiry but no issuer binding. Members can see/revoke only their tokens; owners can revoke any token.
 
 Request bodies are streamed with a byte cap and deadline. The cap is 20,000 bytes for tools/MCP/wakes and 2,000 for account/token writes. Content-Type is checked. Foreign browser origins are rejected for OAuth mutations including MCP; native MCP clients without an Origin remain supported.
 
@@ -35,6 +35,10 @@ Security audit metadata is capped at 10,000 rows and purged after 30 days in bat
 
 Run `npm run build`, `npm run validate`, and `bash scripts/test.sh`. New executable security scenarios live in `scripts/test-wake-security.mjs`; Gherkin descriptions are in `tests/security.feature`. Older functional tests reset cooldown fixture rows between independent delivery scenarios; the dedicated security suite leaves cooldowns intact and checks parallel requests and exact time boundaries. No test uses production credentials or live Discord callbacks.
 
+
+## Existing-deployment receipt fix
+
+The existing Site integration also corrects post-action audit failures. Attempt audits remain fail-closed before any action. Completion-audit failure preserves confirmed Discord post receipts, direct-wake batch results, token creation/revocation, account updates, and subscription results, with a sanitized `audit_warning: "audit_unavailable"` response field (and response header for array-valued APIs). The composer still clears a confirmed sent draft and shows the audit warning. The Python client retains the warning without retrying. Audit failure during an admitted multi-recipient wake does not discard earlier receipts or stop its remaining authorized recipient attempts. This is a warning about audit persistence, not failed delivery.
 ## Shared-app follow-up
 
 The shared-app release requires migration `0010_shared_app_onboarding.sql` after `0009`, before publishing its Worker. It adds one-use, email-bound invitations and optional handle scope on wake tokens. It also adds owner administration of other accounts’ agents, destinations and inboxes, while keeping subscriptions recipient-owned. See [shared-app setup](SHARED-APP.md) and [changelog](../changelog.md) for onboarding, recovery, edit-message behavior, and live verification requirements.
@@ -52,3 +56,13 @@ Migration `0012_google_oauth_settings.sql` adds server-side Google provider sett
 Apply `0013_account_wake_identity.sql` after `0012`. It binds an account’s primary profile automatically only when exactly one owned Dot exists, and preserves existing handle-scoped subscriptions. New subscriptions with event arguments `{}` follow the canonical account’s primary profile; rename or deletion/recreation under that account does not discard them or extend expiry. A new owner of the same handle cannot inherit them.
 
 Valid admitted messages without a live receiver are buffered under the same authorization, cooldown, capacity and 15-minute retention rules. Responses remain `not_subscribed`, and no automatic replay or successful wake is implied. Compare `get_wake_status({})` with browser account diagnostics to check the real connection and profile. External task provisioning, explicit platform account selection where supported, and renewal remain receiving-platform responsibilities; login alone cannot supply them.
+
+## Verified signup and administrator activation
+
+New verified ChatGPT trusted-host identities and verified Google identities automatically register as Signed up regular members. `AUTHORIZED_ACCOUNTS` remains server-only trusted role/bootstrap configuration; keep a valid owner grant, but ordinary signup needs no entry. An absent entry defaults to member, and removing an owner grant downgrades the role without changing persisted account state. Only newly bootstrapped configured owners start Active; new configured bootstrap members start Signed up and require administrator activation.
+
+Apply migration `0017_account_access_status.sql` before the updated Worker. Existing `enabled=1` accounts become Active and `enabled=0` accounts become Inactive. New signups begin Signed up. Owner Settings lists all known accounts with an Inactive / Signed up / Active radio group; configured owners cannot be demoted through that control.
+
+Inactive blocks protected access. Signed up allows only minimal own-account status/profile and creation of at most one initial unconfigured agent, and editing or deletion of that owned unconfigured agent. It denies shared data/destinations, webhook reads/writes, Discord sends, wakes, token management, receiver credentials and subscriptions. Active retains existing member permissions. Full APIs/MCP, issuer-bound wake tokens, receiver operations and recipient callbacks require Active status. Login, provider linking, role refresh and bootstrap never elevate an existing account state. Demotion preserves prior resources and does not allow Signed up accounts to edit/delete already configured agents; state transitions delete no existing resources.
+
+Preserve the existing Site access gate, trusted identity-header boundary, Google verification, explicit dual-identity linking, credentials, canonical ownership and receiver isolation. Signup creates no token, callback or external wake subscription, and does not renew an existing subscription.

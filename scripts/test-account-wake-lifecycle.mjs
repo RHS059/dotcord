@@ -1,4 +1,5 @@
 // Real Worker and migrated transactional SQLite; external receivers/Discord are mocked.
+import {seedActiveAccounts} from './helpers/accounts.mjs';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync,readdirSync} from 'node:fs';
@@ -18,6 +19,7 @@ assert.equal(sql.prepare('SELECT COUNT(*) n FROM dots').get().n,3);
 const DB={batch(items){sql.exec('BEGIN');try{const r=items.map(x=>x.run());sql.exec('COMMIT');return r;}catch(e){sql.exec('ROLLBACK');throw e;}},prepare(q){return {bind(...args){return {first:()=>sql.prepare(q).get(...args)||null,all:()=>({results:sql.prepare(q).all(...args)}),run:()=>sql.prepare(q).run(...args)}}}}};
 const identities=['admin','sender','recipient','other','legacy_one','legacy_many','legacy_none'];
 const env={DB,AUTHORIZED_ACCOUNTS:JSON.stringify(identities.map(id=>({email:id+'@example.test',role:id==='admin'?'owner':'member'})))};
+seedActiveAccounts(sql,env);
 async function request(path,body,who='recipient'){
  const headers={'content-type':'application/json',origin:'https://lifecycle.test','oai-authenticated-user-id':who,'oai-authenticated-user-email':who+'@example.test'};
  const r=await worker.fetch(new Request('https://lifecycle.test'+path,{method:body?'POST':'GET',headers,body:body?JSON.stringify(body):undefined}),env);return {status:r.status,data:await r.json()};

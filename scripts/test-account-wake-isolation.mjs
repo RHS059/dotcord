@@ -49,8 +49,12 @@ try{
  assert.notEqual((await tool('alpha','get_wake_status')).state,'ready');
  await register('alpha','replacement');assert.notEqual((await tool('alpha','get_wake_status')).state,'ready','Reconnect does not forge renewal');
  assert.equal((await mention('replacement')).results[0].status,'not_subscribed');assert.equal(events.length,0);
- // Persisted account subscriptions do not bypass the current access list.
+ // Role configuration removal preserves member delivery; persisted disablement blocks it.
  await subscribe('alpha');env.AUTHORIZED_ACCOUNTS=JSON.stringify([{email:'beta@example.test',role:'member'}]);
+ assert.equal((await mention('replacement')).results[0].status,'accepted');assert.equal(events.length,1);
+ sql.prepare('UPDATE accounts SET enabled=0 WHERE user_id=?').run('alpha');events=[];
  assert.equal((await mention('replacement')).results[0].status,'inactive');assert.equal(events.length,0);
- console.log('PASS: canonical account wake isolation, deletion/recreation ownership, foreign legacy filter denial, no readiness without profile/destination, no renewal on reconnect/errors, current allowlist enforcement. Mock callbacks only.');
+ assert.ok((await rpc('alpha','tools/call',{name:'get_wake_status',arguments:{}})).error);
+ assert.equal(sql.prepare('SELECT enabled FROM accounts WHERE user_id=?').get('alpha').enabled,0);
+ console.log('PASS: canonical account wake isolation, deletion/recreation ownership, foreign legacy filter denial, no readiness without profile/destination, no renewal on reconnect/errors, unconfigured member access and persisted disablement. Mock callbacks only.');
 }finally{globalThis.fetch=originalFetch;sql.close();}

@@ -1,4 +1,5 @@
 // Actual Worker, migrated SQLite, synthetic OAuth identities and mock callback receivers.
+import {seedActiveAccounts} from './helpers/accounts.mjs';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync,readdirSync} from 'node:fs';
@@ -14,6 +15,7 @@ const migrated=sql.prepare("SELECT * FROM api_tokens WHERE id='legacy'").get();a
 const DB={async batch(items){return Promise.all(items.map(i=>i.run()));},prepare(q){return {bind(...args){return {first:async()=>sql.prepare(q).get(...args)||null,all:async()=>({results:sql.prepare(q).all(...args)}),run:async()=>sql.prepare(q).run(...args)}}}}};
 const accounts=[{email:'owner@example.test',role:'owner'},{email:'member@example.test',role:'member'},{email:'receiver@example.test',role:'member'}];
 const env={DB,AUTHORIZED_ACCOUNTS:JSON.stringify(accounts)};
+seedActiveAccounts(sql,env);
 const RealDate=Date;let time=RealDate.now();globalThis.Date=class extends RealDate{constructor(...a){super(...(a.length?a:[time]));}static now(){return time;}};
 let callbacks=0;const originalFetch=globalThis.fetch;
 globalThis.fetch=async(url,options)=>{callbacks++;assert.ok(url.startsWith('https://chatgpt.com/'));assert.ok(options.headers['webhook-signature']);return new Response(null,{status:204});};
@@ -74,14 +76,20 @@ try{
  const streamed=await worker.fetch(new Request('https://relay.test/api/wake',{method:'POST',headers:{authorization:'Bearer '+secret,'content-type':'application/json'},body:stream,duplex:'half'}),env);
  assert.equal(streamed.status,413);assert.equal(cancelled,true);assert.ok(pulls<=2,'Stops consuming before buffering entire body');
  env.AUTHORIZED_ACCOUNTS=JSON.stringify(accounts.filter(a=>a.email!=='member@example.test'));
- assert.equal((await req('/api/account',null,{who:'member'})).status,401);assert.equal((await wake(secret)).status,401,'Issuer removal invalidates its tokens');
+ const unconfigured=await req('/api/account',null,{who:'member'});assert.equal(unconfigured.status,200);assert.equal(unconfigured.data.can_manage_accounts,false);
+ assert.equal((await req('/api/accounts',null,{who:'member'})).status,403);
+ assert.equal((await wake(secret,['unregistered'])).status,200,'Removing member role configuration does not invalidate its tokens');
+ const memberId=digest('member@example.test');assert.equal((await req('/api/accounts',{account_id:memberId,enabled:false})).status,200);
+ assert.equal((await req('/api/account',null,{who:'member'})).status,401);assert.equal((await wake(secret)).status,401,'Persisted issuer disablement invalidates its tokens');
+ assert.equal(sql.prepare('SELECT enabled FROM accounts WHERE user_id=?').get('member').enabled,0);
+ assert.equal((await req('/api/accounts',{account_id:memberId,enabled:true})).status,200);
  assert.equal((await req('/api/account')).status,200,'Owner recovery path remains available');
  env.AUTHORIZED_ACCOUNTS=JSON.stringify(accounts.map(a=>a.email==='owner@example.test'?{...a,role:'member'}:a));assert.equal((await req('/api/accounts')).status,403,'Role downgrade is immediate');
  env.AUTHORIZED_ACCOUNTS=JSON.stringify(accounts);
  const receiverId=digest('receiver@example.test');assert.equal((await req('/api/accounts',{account_id:receiverId,enabled:false})).status,200);
  time+=15000;assert.equal((await wake(secret)).data.results[0].status,'inactive');assert.equal(callbacks,beforeCallbacks);
  assert.equal((await req('/api/accounts',{account_id:receiverId,enabled:true})).status,200);
- env.AUTHORIZED_ACCOUNTS=JSON.stringify(accounts.filter(a=>a.email!=='receiver@example.test'));assert.equal((await wake(secret)).data.results[0].status,'inactive');env.AUTHORIZED_ACCOUNTS=JSON.stringify(accounts);
+ env.AUTHORIZED_ACCOUNTS=JSON.stringify(accounts.filter(a=>a.email!=='receiver@example.test'));assert.equal((await wake(secret)).data.results[0].status,'accepted','Unconfigured active members retain callback delivery');assert.equal(callbacks,beforeCallbacks+1);env.AUTHORIZED_ACCOUNTS=JSON.stringify(accounts);
  assert.equal((await req('/api/accounts',{account_id:digest('owner@example.test'),enabled:false})).status,400,'Cannot disable owner');
  assert.equal((await req('/api/tokens',{id:issue.data.token.id},{who:'member',method:'DELETE'})).status,403);
  assert.equal((await req('/api/tokens',null,{who:'member'})).data.tokens[0].can_revoke,false);
@@ -102,5 +110,5 @@ try{
  sql.exec("UPDATE temporary_inbox SET expires='2000-01-01'; DELETE FROM security_maintenance");
  await worker.fetch(new Request('https://relay.test/'),env);assert.ok(sql.prepare('SELECT COUNT(*) n FROM temporary_inbox').get().n>0,'Public static requests do not trigger cleanup');
  await worker.scheduled({},env,{});assert.equal(sql.prepare('SELECT COUNT(*) n FROM temporary_inbox').get().n,0);
- console.log('PASS wake security: wake-only scope, OAuth management, issuer ACL and role sync, ownership, expiration, legacy migration, cross-credential/OAuth concurrent cooldown, partial delivery, CSRF, streaming byte limits, secret-free bounded audit/pagination, scheduled cleanup, owner recovery. Synthetic fixtures only.');
+ console.log('PASS wake security: wake-only scope, OAuth management, persisted issuer disablement and trusted role sync, ownership, expiration, legacy migration, cross-credential/OAuth concurrent cooldown, partial delivery, CSRF, streaming byte limits, secret-free bounded audit/pagination, scheduled cleanup, owner recovery. Synthetic fixtures only.');
 }finally{globalThis.Date=RealDate;globalThis.fetch=originalFetch;sql.close();}

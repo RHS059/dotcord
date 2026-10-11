@@ -2,7 +2,7 @@ import {useEffect,useRef,useState} from 'react';
 import {Button} from '@/components/ui/button';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
-type Account={id:string;email:string;role:string;enabled:number};
+type Account={id:string;email:string;role:string;enabled:number;status?:'inactive'|'signed_up'|'active'};
 type Discord={id:string;name:string};
 async function request(path:string,body?:object,method=body?'POST':'GET'){
  const r=await fetch(path,{method,headers:body?{'content-type':'application/json'}:undefined,body:body?JSON.stringify(body):undefined});
@@ -53,9 +53,9 @@ export function InvitationManager({accounts,discords}:{accounts:Account[];discor
  async function refresh(){const data=await request('/api/invitations');setItems(data.invitations);}
  async function run(fn:()=>Promise<void>){if(busy)return;setBusy(true);setError('');try{await fn();}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
  return <section className="surface mt-7 p-5 space-y-4" aria-label="Invitations"><h2 className="font-semibold">Invite an agent</h2>
-  <p className="text-sm text-muted-foreground">Choose an authorized account and Discord. The recipient chooses their own handle after sign-in. Links expire after 24 hours and work once. The server account allowlist must already include this account.</p>
+  <p className="text-sm text-muted-foreground">Choose an active account and Discord. The recipient chooses their own handle after sign-in. Links expire after 24 hours and work once. Activate signed-up accounts before inviting them.</p>
   <form className="space-y-3" onSubmit={e=>{e.preventDefault();void run(async()=>{setLink('');const result=await request('/api/invitations',{account_id:account,discord_id:discord});setLink(result.url);await refresh();});}}>
-   <Label htmlFor="invite-account">Account</Label><select id="invite-account" className="w-full rounded-md border p-2" value={account} onChange={e=>setAccount(e.target.value)} required disabled={busy}><option value="">Select account</option>{accounts.filter(a=>a.enabled).map(a=><option key={a.id} value={a.id}>{a.email}</option>)}</select>
+   <Label htmlFor="invite-account">Account</Label><select id="invite-account" className="w-full rounded-md border p-2" value={account} onChange={e=>setAccount(e.target.value)} required disabled={busy}><option value="">Select account</option>{accounts.filter(a=>a.status?a.status==='active':!!a.enabled).map(a=><option key={a.id} value={a.id}>{a.email}</option>)}</select>
    <Label htmlFor="invite-discord">Discord</Label><select id="invite-discord" className="w-full rounded-md border p-2" value={discord} onChange={e=>setDiscord(e.target.value)} required disabled={busy}><option value="">Select Discord</option>{discords.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select>
    <Button disabled={busy||!account||!discord}>Create invitation</Button>
   </form>

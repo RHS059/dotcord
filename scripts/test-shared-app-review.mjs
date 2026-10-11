@@ -1,4 +1,5 @@
 // Independent authorization review. Real Worker and transactional SQLite; no live network.
+import {seedActiveAccounts} from './helpers/accounts.mjs';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync,readdirSync} from 'node:fs';
@@ -9,6 +10,7 @@ for(const f of readdirSync('drizzle').filter(f=>f.endsWith('.sql')).sort())sql.e
 const DB={async batch(items){sql.exec('BEGIN');try{const results=items.map(i=>i.exec());sql.exec('COMMIT');return results;}catch(e){sql.exec('ROLLBACK');throw e;}},prepare(q){return {bind(...args){return {exec:()=>sql.prepare(q).run(...args),run:async()=>sql.prepare(q).run(...args),first:async()=>sql.prepare(q).get(...args)||null,all:async()=>({results:sql.prepare(q).all(...args)})};}}}};
 const accounts=[{email:'admin@example.test',role:'owner'},{email:'alice@example.test',role:'member'},{email:'bob@example.test',role:'member'}];
 const env={DB,AUTHORIZED_ACCOUNTS:JSON.stringify(accounts)};
+seedActiveAccounts(sql,env);
 const digest=s=>createHash('sha256').update(s).digest('hex');
 async function req(path,body,{who='admin',token,origin='https://relay.test',method}={}){
 const headers={'content-type':'application/json',origin};if(token)headers.authorization='Bearer '+token;else{headers['oai-authenticated-user-id']=who;headers['oai-authenticated-user-email']=who+'@example.test';}

@@ -1,0 +1,122 @@
+// Real Worker and isolated SQLite only; no live account, token, callback or settings changes.
+import assert from 'node:assert/strict';
+import {DatabaseSync} from 'node:sqlite';
+import {readFileSync,readdirSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import worker from '../worker/index.js';
+const sql=new DatabaseSync(':memory:');
+for(const file of readdirSync('drizzle').filter(f=>f.endsWith('.sql')).sort())sql.exec(readFileSync('drizzle/'+file,'utf8').replaceAll('--> statement-breakpoint',''));
+const DB={async batch(items){sql.exec('BEGIN');try{const result=[];for(const item of items)result.push(await item.run());sql.exec('COMMIT');return result;}catch(e){sql.exec('ROLLBACK');throw e;}},prepare(query){return {bind(...args){return {first:async()=>sql.prepare(query).get(...args)||null,all:async()=>({results:sql.prepare(query).all(...args)}),run:async()=>({meta:{changes:sql.prepare(query).run(...args).changes}})}}}}};
+const env={DB,AUTHORIZED_ACCOUNTS:JSON.stringify([{email:'admin@example.test',role:'owner'},{email:'disabled@example.test',role:'member'}])};
+const digest=value=>createHash('sha256').update(value).digest('hex');
+async function request(path,body,{subject='admin',email=subject+'@example.test',token,method,origin='https://signup.test'}={}){
+ const headers={'content-type':'application/json'};
+ if(subject){headers['oai-authenticated-user-id']=subject;if(email!==null)headers['oai-authenticated-user-email']=email;}
+ if(token)headers.authorization='Bearer '+token;if(origin)headers.origin=origin;
+ const response=await worker.fetch(new Request('https://signup.test'+path,{headers,method:method||(body?'POST':'GET'),...(body?{body:JSON.stringify(body)}:{})}),env);
+ return {status:response.status,data:await response.json()};
+}
+const tool=(name,args,options)=>request('/api/tool',{name,arguments:args},options);
+const originalFetch=globalThis.fetch;let outbound=0;
+globalThis.fetch=async()=>{outbound++;throw Error('No external traffic allowed in signup tests');};
+try{
+ assert.equal((await request('/api/account',null,{subject:null})).status,401);
+ assert.equal(sql.prepare('SELECT COUNT(*) n FROM accounts').get().n,0,'Anonymous reads cannot create accounts');
+ for(const email of ['',null,'not-an-email','a@@example.test','x'.repeat(255)+'@example.test'])assert.equal((await request('/api/account',null,{subject:'missing-email',email})).status,401);
+ assert.equal(sql.prepare('SELECT COUNT(*) n FROM accounts').get().n,0,'Invalid trusted identity fails before signup');
+ assert.equal((await request('/api/account')).data.can_manage_accounts,true);
+ sql.prepare('UPDATE accounts SET enabled=0 WHERE email=?').run('disabled@example.test');
+ const fresh={subject:'new-member',email:'NewMember@Example.Test'};
+ const signups=await Promise.all(Array.from({length:4},()=>request('/api/account',null,fresh)));
+ assert.ok(signups.every(r=>r.status===200&&r.data.can_manage_accounts===false));
+ let account=sql.prepare('SELECT * FROM accounts WHERE email=?').get('newmember@example.test');
+ assert.equal(account.enabled,1);assert.equal(account.status,'signed_up');assert.equal(account.role,'member');assert.equal(account.user_id,'new-member');
+ assert.equal(sql.prepare('SELECT COUNT(*) n FROM account_identities WHERE user_id=?').get('new-member').n,1);
+ assert.equal((await request('/api/account',null,{subject:'new-member',email:null})).status,200,'Bound native identities can omit email');
+ assert.equal((await request('/api/account',null,{subject:'new-member',email:'alias@example.test'})).status,401);
+ assert.equal(sql.prepare('SELECT email FROM accounts WHERE email=?').get('alias@example.test'),undefined,'Changed verified email cannot split a canonical identity');
+ assert.equal((await request('/api/account',null,{subject:'different-subject',email:'newmember@example.test'})).status,401,'Email equality alone cannot take another canonical identity');
+ for(const path of ['/api/accounts','/api/audit','/api/auth/google-settings','/api/invitations'])assert.equal((await request(path,null,fresh)).status,403,path);
+ assert.equal((await request('/api/accounts',{account_id:digest('newmember@example.test'),enabled:true,role:'owner'},fresh)).status,403);
+ assert.equal((await request('/api/account',{email:'admin@example.test',role:'owner'},fresh)).status,403);
+ assert.equal((await request('/api/account',null,fresh)).data.can_manage_accounts,false);
+ const connection=(await tool('add_discord',{name:'Admin destination',channel_url:'https://discord.com/channels/123456789012345678/234567890123456789',bot_token:'SYNTHETIC_PRIVATE_BOT_1234567890'})).data;
+ const hook='https://discord.com/api/webhooks/334567890123456789/SYNTHETIC_PRIVATE_WEBHOOK_1234567890';
+ await tool('register_dot',{dot_id:'admin_dot',discord_id:connection.id,webhook_url:hook});
+ // A signed-up member has an isolated agent-only surface, with no shared lists.
+ const pending=(await request('/api/account',null,fresh)).data;
+ assert.equal(pending.account_status,'signed_up');assert.equal(pending.wake,undefined);assert.equal(pending.profile,undefined);
+ assert.deepEqual((await tool('list_dots',{},fresh)).data,[]);
+ const discovery=(await request('/mcp',{jsonrpc:'2.0',id:1,method:'tools/list'},{...fresh,origin:null})).data.result.tools;
+ for(const operation of ['register_dot','update_agent'])assert.ok(!discovery.find(t=>t.name===operation).inputSchema.required.includes('discord_id'),'Pending MCP operations must have usable schemas');
+ for(const path of ['/api/tokens','/api/receivers','/api/invitations','/api/audit','/api/auth/google-settings'])assert.equal((await request(path,null,fresh)).status,403,path);
+ for(const name of ['list_discords','get_wake_status','read_pending_message','list_pending_messages','acknowledge_message','post_to_discord','read_discord','send_mention','add_discord','set_webhook','set_discord'])assert.equal((await tool(name,{},fresh)).status,403,name);
+ for(const path of ['/api/onboarding','/api/auth/link-host','/api/wake','/api/test-wake','/api/tokens','/api/receivers'])assert.equal((await request(path,{},fresh)).status,403,path);
+ for(const extra of [{discord_id:connection.id},{webhook_url:hook},{owner:'admin'},{enabled:true},{role:'owner'},{status:'active'}])assert.equal((await tool('register_dot',{dot_id:'blocked',...extra},fresh)).status,403);
+ assert.equal((await tool('register_dot',{dot_id:'pending_agent'},fresh)).status,200);
+ assert.equal((await tool('register_dot',{dot_id:'second_agent'},fresh)).status,400,'Only one initial agent');
+ assert.deepEqual({...sql.prepare('SELECT owner,discord_id,webhook_url FROM dots WHERE id=?').get('pending_agent')},{owner:'new-member',discord_id:null,webhook_url:null});
+ const pendingList=(await tool('list_dots',{},fresh)).data;assert.equal(pendingList.length,1);assert.equal(pendingList[0].dot_id,'pending_agent');
+ assert.deepEqual(Object.keys(pendingList[0]).sort(),['agent_type','can_manage','dot_id','is_owned']);
+ assert.equal((await tool('update_agent',{dot_id:'admin_dot',handle:'stolen'},fresh)).status,403);
+ assert.equal((await tool('delete_agent',{dot_id:'admin_dot'},fresh)).status,403);
+ assert.equal((await tool('update_agent',{dot_id:'pending_agent',handle:'pending_renamed',agent_type:'agent'},fresh)).status,200);
+ assert.equal((await tool('delete_agent',{dot_id:'pending_renamed'},fresh)).status,200);
+ assert.equal(sql.prepare('SELECT COUNT(*) n FROM api_tokens').get().n,0);
+ assert.equal(sql.prepare('SELECT COUNT(*) n FROM receiver_credentials').get().n,0);
+ assert.equal(sql.prepare('SELECT COUNT(*) n FROM subscriptions').get().n,0);
+ const native=(await request('/mcp',{jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'list_dots',arguments:{}}},{...fresh,origin:null})).data;
+ assert.deepEqual(JSON.parse(native.result.content[0].text),[]);
+ assert.equal((await request('/mcp',{jsonrpc:'2.0',id:1,method:'events/subscribe',params:{}},{...fresh,origin:null})).data.error.code,-32001);
+ assert.equal((await request('/api/accounts')).data.accounts.find(a=>a.email==='newmember@example.test').status,'signed_up');
+ assert.equal((await request('/api/accounts',{account_id:digest('newmember@example.test'),status:'active'},fresh)).status,403);
+ assert.equal((await request('/api/accounts',{account_id:digest('newmember@example.test'),status:'active'})).status,200);
+ assert.equal((await request('/api/account',null,fresh)).data.account_status,'active');
+ const privateBefore=sql.prepare('SELECT * FROM discords').all();
+ const agentsBefore=sql.prepare('SELECT * FROM dots').all();
+ assert.equal((await tool('read_discord',{dot_id:'admin_dot'},fresh)).status,403);
+ assert.equal((await tool('set_webhook',{dot_id:'admin_dot',webhook_url:hook},fresh)).status,403);
+ assert.equal((await tool('update_discord',{discord_id:connection.id,name:'Changed'},fresh)).status,403);
+ const dots=(await tool('list_dots',{},fresh)).data;assert.equal(dots.find(a=>a.dot_id==='admin_dot').can_manage,0);
+ for(const list of [dots,(await tool('list_discords',{},fresh)).data])assert.ok(!JSON.stringify(list).includes('SYNTHETIC_PRIVATE'));
+ const token=(await request('/api/tokens',{name:'Own wake'},fresh)).data;
+ const receiver=(await request('/api/receivers',{name:'Own receiver'},fresh)).data;
+ assert.equal(sql.prepare('SELECT owner FROM api_tokens WHERE id=?').get(token.token.id).owner,'new-member');
+ assert.equal(sql.prepare('SELECT owner FROM receiver_credentials WHERE id=?').get(receiver.receiver.id).owner,'new-member');
+ const ownTokens=(await request('/api/tokens',null,fresh)).data.tokens;assert.ok(ownTokens.every(t=>t.id===token.token.id&&!t.can_revoke));
+ const accounts=(await request('/api/accounts')).data.accounts;
+ assert.ok(accounts.some(a=>a.email==='newmember@example.test'&&a.enabled===1&&a.role==='member'&&a.receiver_eligible));
+ // Demoting an active account pauses all existing grants without deleting them.
+ assert.equal((await request('/api/accounts',{account_id:digest('newmember@example.test'),status:'signed_up'})).status,200);
+ assert.equal((await request('/api/account',null,fresh)).data.account_status,'signed_up');
+ assert.equal((await request('/api/wake',{message_id:'pending-token',text:'blocked'},{subject:null,token:token.secret})).status,401);
+ assert.equal((await request('/api/receiver',{method:'status'},{subject:null,token:receiver.secret})).status,401);
+ assert.equal((await request('/api/accounts')).data.accounts.find(a=>a.email==='newmember@example.test').receiver_eligible,false);
+ assert.equal((await request('/api/receivers',{name:'Target pending',account_id:digest('newmember@example.test')})).status,403);
+ assert.equal((await request('/api/accounts',{account_id:digest('newmember@example.test'),status:'inactive'})).status,200);
+
+ const storedTokens=sql.prepare('SELECT * FROM api_tokens').all();const storedReceivers=sql.prepare('SELECT * FROM receiver_credentials').all();
+ for(const options of [fresh,{subject:'new-member',email:null},{subject:'new-member',email:'alias@example.test'},{subject:'new-subject',email:'newmember@example.test'}]){
+  const denied=await request('/api/account',null,options);assert.equal(denied.status,401);assert.equal(denied.data.reason,'account_disabled');
+ }
+ assert.equal((await request('/api/account',null,{subject:'disabled'})).data.reason,'account_disabled','Bootstrap cannot reset disabled accounts');
+ for(const path of ['/api/accounts','/api/tokens','/api/receivers','/api/invitations','/api/audit'])assert.equal((await request(path,null,fresh)).status,401,path);
+ for(const name of ['list_dots','list_discords','get_wake_status','read_pending_message','register_dot','post_to_discord','send_mention'])assert.equal((await tool(name,{},fresh)).status,401,name);
+ const mcp=await request('/mcp',{jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'list_dots',arguments:{}}},{...fresh,origin:null});assert.equal(mcp.data.error.code,-32001);
+ const sub=await request('/mcp',{jsonrpc:'2.0',id:1,method:'events/subscribe',params:{}},{...fresh,origin:null});assert.equal(sub.data.error.code,-32001);
+ assert.equal((await request('/api/wake',{message_id:'disabled-token',text:'blocked'}, {subject:null,token:token.secret})).status,401);
+ assert.equal((await request('/api/receiver',{method:'status'},{subject:null,token:receiver.secret})).status,401);
+ assert.equal(sql.prepare('SELECT enabled FROM accounts WHERE email=?').get('newmember@example.test').enabled,0);
+ assert.equal(sql.prepare('SELECT email FROM accounts WHERE email=?').get('alias@example.test'),undefined);
+ assert.deepEqual(sql.prepare('SELECT * FROM api_tokens').all(),storedTokens,'Disable preserves token records');
+ assert.deepEqual(sql.prepare('SELECT * FROM receiver_credentials').all(),storedReceivers,'Disable preserves receiver bindings');
+ assert.deepEqual(sql.prepare('SELECT * FROM discords').all(),privateBefore);assert.deepEqual(sql.prepare('SELECT * FROM dots').all(),agentsBefore);
+ for(const status of ['inactive','signed_up'])assert.equal((await request('/api/accounts',{account_id:digest('admin@example.test'),status})).status,400,'Configured admin must stay Active');
+ for(const status of ['owner','enabled',null,0])assert.equal((await request('/api/accounts',{account_id:digest('newmember@example.test'),status})).status,400);
+ assert.equal((await request('/api/accounts',{account_id:digest('newmember@example.test'),status:'active'})).status,200);
+ assert.equal((await request('/api/account',null,fresh)).status,200,'Only explicit admin re-enable restores access');
+ assert.equal((await request('/api/receiver',{method:'status'},{subject:null,token:receiver.secret})).status,200,'Preserved receiver usable again without rotation');
+ assert.equal((await request('/api/account')).data.can_manage_accounts,true,'Existing configured admin preserved');
+ assert.equal(outbound,0,'No real or mock external operation was needed');
+ console.log('PASS three-state signup: verified Signed up members, isolated own-agent setup, admin-only Active/Inactive transitions, duplicate login, trusted roles, identity/alias isolation, API/MCP/token/receiver gates, preserved credentials and explicit re-enable. Isolated SQLite only.');
+}finally{globalThis.fetch=originalFetch;sql.close();}

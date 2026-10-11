@@ -11,7 +11,7 @@ let auditFault=()=>false,receiptFault=false;
 const DB={async batch(items){sql.exec('BEGIN');try{const result=[];for(const item of items)result.push(await item.run());sql.exec('COMMIT');return result;}catch(e){sql.exec('ROLLBACK');throw e;}},prepare(query){return {bind(...args){return {first:async()=>sql.prepare(query).get(...args)||null,all:async()=>({results:sql.prepare(query).all(...args)}),run:async()=>{if(query.startsWith('INSERT INTO security_audit')&&auditFault(args))throw Error('Synthetic audit failure');if(query.startsWith('UPDATE wake_tests')&&receiptFault)throw Error('Synthetic receipt failure');return {meta:{changes:sql.prepare(query).run(...args).changes}};}}}}}};
 const identities=['admin','member','other','disabled','removed'];
 const env={DB,AUTHORIZED_ACCOUNTS:JSON.stringify(identities.filter(id=>id!=='removed').map(id=>({email:id+'@example.test',role:id==='admin'?'owner':'member'})))};
-for(const id of identities){sql.prepare('INSERT INTO accounts(email,user_id,role,enabled,primary_dot) VALUES (?,?,?,?,?)').run(id+'@example.test',id,id==='admin'?'owner':'member',id==='disabled'?0:1,id+'_dot');sql.prepare('INSERT INTO dots(id,owner,created,agent_type,discord_id) VALUES (?,?,?,?,?)').run(id+'_dot',id,new Date().toISOString(),'dot','destination');}
+for(const id of identities){sql.prepare('INSERT INTO accounts(email,user_id,role,enabled,primary_dot) VALUES (?,?,?,?,?)').run(id+'@example.test',id,id==='admin'?'owner':'member',['disabled','removed'].includes(id)?0:1,id+'_dot');sql.prepare('INSERT INTO dots(id,owner,created,agent_type,discord_id) VALUES (?,?,?,?,?)').run(id+'_dot',id,new Date().toISOString(),'dot','destination');}
 sql.prepare('INSERT INTO dots(id,owner,created,agent_type,discord_id) VALUES (?,?,?,?,?)').run('member_agent','member',new Date().toISOString(),'agent','destination');
 sql.prepare('INSERT INTO discords(id,owner,name,connection_url,guild_id,channel_id,bot_token) VALUES (?,?,?,?,?,?,?)').run('destination','admin','Synthetic','','123456789012345678','234567890123456789','SYNTHETIC_PRIVATE_BOT');
 const secret='whsec_'+Buffer.alloc(32,42).toString('base64');
@@ -31,6 +31,7 @@ try{
  assert.equal((await test({}, {recipients:['other_dot']})).status,400);
  assert.equal((await test({}, {callback_url:'https://hostile.test'})).status,400);
  assert.equal((await test({}, {dot_id:'other_dot'})).status,403);
+ // Both configured and unconfigured persisted-disabled recipients are denied.
  for(const dot of ['disabled_dot','removed_dot','member_agent'])assert.equal((await test({who:'admin'},{dot_id:dot})).status,403);
  const id=requestId();const accepted=await test({}, {request_id:id});assert.equal(accepted.status,200);assert.equal(accepted.data.status,'accepted');assert.equal(accepted.data.agent_execution_confirmed,false);assert.equal(accepted.data.results[0].attempts,1);assert.equal(calls.length,1);assert.equal(calls[0].payload.data.message_id,accepted.data.message_id);assert.equal(calls[0].payload.data.dot_id,'member_dot');
  assert.equal(calls[0].payload.data.sender,'Dotcord Test wake');assert.ok(calls[0].payload.data.text.includes('Test wake'));

@@ -8,7 +8,7 @@ const schema=(properties,required=[])=>({type:'object',properties,required,addit
 const str={type:'string'};
 const dotSchema={type:'string',pattern:'^(?!.*\\.\\.)[a-z0-9_.]{2,32}$'};
 const tools=[
-{name:'register_dot',description:'Set up your account’s Dot handle and Discord destination. The first Dot becomes your account profile. Use get_wake_status.filter when subscribing to dot.mentioned for account-bound wake delivery.',inputSchema:schema({dot_id:dotSchema,agent_type:{type:'string',enum:['dot','agent']},discord_id:str,webhook_url:str},['dot_id','discord_id'])},
+{name:'register_dot',description:'Signed up accounts can create one own agent with dot_id and optional agent_type only; omit discord_id and webhook_url until Active. Active accounts must select a Discord destination. Set up your account’s Dot handle and Discord destination. The first Dot becomes your account profile. Use get_wake_status.filter when subscribing to dot.mentioned for account-bound wake delivery.',inputSchema:schema({dot_id:dotSchema,agent_type:{type:'string',enum:['dot','agent']},discord_id:str,webhook_url:str},['dot_id'])},
 {name:'get_wake_status',description:'Inspect the authenticated account’s stable binding, primary handle and active wake subscription readiness. No callback secrets or other account identity are returned. Use the returned filter to bind the subscription to this account and reject the wrong connection; the receiving platform must establish and renew it.',inputSchema:schema({})},
 {name:'list_dots',description:'List registered Dot identities and their wakeup subscription readiness. Does not expose callback URLs, signing secrets, or account identities.',inputSchema:schema({})},
 {name:'list_discords',description:'List configured Discord channel destinations.',inputSchema:schema({})},
@@ -16,7 +16,7 @@ const tools=[
 {name:'update_discord',description:'Update your Discord name and channel. Saved agent webhooks are preserved.',inputSchema:schema({discord_id:str,name:str,channel_url:str,bot_token:str},['discord_id'])},
 {name:'delete_discord',description:'Delete your Discord destination and unlink its agents. Agent registrations are retained.',inputSchema:schema({discord_id:str},['discord_id'])},
 {name:'set_discord',description:'Select the configured Discord destination for one of your registered Dots or agents.',inputSchema:schema({dot_id:dotSchema,discord_id:str},['dot_id','discord_id'])},
-{name:'update_agent',description:'Update your agent handle, Discord and optional replacement webhook together.',inputSchema:schema({dot_id:dotSchema,handle:dotSchema,discord_id:str,webhook_url:str,agent_type:{type:'string',enum:['dot','agent']}},['dot_id','handle','discord_id'])},
+{name:'update_agent',description:'Update your agent handle. Signed up accounts may edit their own unconfigured agent with dot_id, handle and optional agent_type only. Active accounts must supply discord_id and may replace the webhook.',inputSchema:schema({dot_id:dotSchema,handle:dotSchema,discord_id:str,webhook_url:str,agent_type:{type:'string',enum:['dot','agent']}},['dot_id','handle'])},
 {name:'delete_agent',description:'Delete your handle and saved webhook. Account-bound wake subscriptions remain with the same account; handle-specific subscriptions and scoped tokens are removed.',inputSchema:schema({dot_id:dotSchema},['dot_id'])},
 {name:'set_webhook',description:'Save or replace the Discord webhook for your agent. The saved credential is never returned.',inputSchema:schema({dot_id:dotSchema,webhook_url:str},['dot_id','webhook_url'])},
 {name:'read_discord',description:'Read current messages from the configured Discord channel or an optional thread_id within it using the saved bot token. Nothing is stored.',inputSchema:schema({dot_id:dotSchema,thread_id:{type:'string',pattern:'^[0-9]{15,22}$'},limit:{type:'integer',minimum:1,maximum:100}},['dot_id'])},
@@ -337,7 +337,7 @@ async function testWake(request,env,account,actor,auditState){
  return auditJSON({...value,...(receiptWarning?{receipt_warning:'receipt_unavailable'}:{})},auditState);
 }
 
-// Current configuration is authoritative; persisted rows cannot preserve a removed grant.
+// Server-only configuration grants roles and bootstraps existing accounts; it is not a signup allowlist.
 function configuredAccounts(env){
  let rows;try{rows=JSON.parse(env.AUTHORIZED_ACCOUNTS||'[]');}catch{throw error('Account configuration is invalid.',-32001);}
  if(!Array.isArray(rows)||rows.some(a=>!a||typeof a.email!=='string'||!['owner','member'].includes(a.role)))throw error('Account configuration is invalid.',-32001);
@@ -346,32 +346,42 @@ function configuredAccounts(env){
  return accounts;
 }
 async function accountActive(env,id){
- const account=await stmt(env.DB,'SELECT email,enabled FROM accounts WHERE user_id=?',id).first();
- return Boolean(account?.enabled&&configuredAccounts(env).some(a=>a.email===account.email));
+ const account=await stmt(env.DB,'SELECT enabled,status FROM accounts WHERE user_id=?',id).first();
+ return accessStatus(account)==='active';
 }
+function accessStatus(account){return account?.enabled===1&&['signed_up','active'].includes(account.status)?account.status:'inactive';}
+function disabledAccount(){return error('This account is disabled. Ask an administrator to re-enable it.',-32001,'account_disabled');}
 async function authorizeIdentity(env,identity,linkProof=null){
- const {provider,subject}=identity,email=identity.email.trim().toLowerCase();
- if(!['host','google'].includes(provider)||typeof subject!=='string'||!subject)throw error('Invalid sign-in identity.',-32001);
- const configured=configuredAccounts(env),allowed=configured.find(a=>a.email===email);
- if(!allowed)throw error('This account is not authorized.',-32001);
- for(const a of configured)await stmt(env.DB,'INSERT INTO accounts (email,role,enabled) VALUES (?,?,1) ON CONFLICT(email) DO UPDATE SET role=excluded.role',a.email,a.role).run();
- let account=await stmt(env.DB,'SELECT * FROM accounts WHERE email=?',email).first();
- if(!account.enabled)throw error('This account is disabled.',-32001);
- const mapping=await stmt(env.DB,'SELECT user_id,email FROM account_identities WHERE provider=? AND subject=?',provider,subject).first();
- if(mapping){
-  if(mapping.email!==email||account.user_id!==mapping.user_id)throw error('Account identity does not match.',-32001);
-  return {...account,auth_method:provider};
- }
+ const {provider,subject}=identity,email=typeof identity.email==='string'?identity.email.trim().toLowerCase():'';
+ if(!['host','google'].includes(provider)||typeof subject!=='string'||!subject||subject.length>255||email.length>254||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))throw error('A verified account identity and email are required. Sign in again.',-32001);
+ const configured=configuredAccounts(env),role=configured.find(a=>a.email===email)?.role||'member';
  const canonical=provider==='google'?'google:'+subject:subject;
+ // Resolve stable identity before creating an email row. A changed email or second
+ // provider cannot replace, split, or reactivate an existing canonical account.
+ const mapping=await stmt(env.DB,'SELECT user_id,email FROM account_identities WHERE provider=? AND subject=?',provider,subject).first();
+ const boundAccount=await stmt(env.DB,'SELECT * FROM accounts WHERE user_id=?',mapping?.user_id||canonical).first();
+ if(boundAccount&&accessStatus(boundAccount)==='inactive')throw disabledAccount();
+ if(mapping&&(!boundAccount||mapping.email!==email||boundAccount.email!==email)||boundAccount&&boundAccount.email!==email)throw error('Account identity does not match.',-32001);
+ // Bootstrap configured rows without ever resetting their persisted enabled flag.
+ for(const a of configured)await stmt(env.DB,'INSERT INTO accounts (email,role,enabled,status) VALUES (?,?,1,?) ON CONFLICT(email) DO UPDATE SET role=excluded.role',a.email,a.role,a.role==='owner'?'active':'signed_up').run();
+ // Only the trusted provider identity reaches here. Client bodies cannot set roles.
+ await stmt(env.DB,'INSERT INTO accounts (email,role,enabled,status) VALUES (?,?,1,?) ON CONFLICT(email) DO UPDATE SET role=excluded.role',email,role,role==='owner'?'active':'signed_up').run();
+ let account=await stmt(env.DB,'SELECT * FROM accounts WHERE email=?',email).first();
+ if(accessStatus(account)==='inactive')throw disabledAccount();
+ if(mapping){
+  if(account.user_id!==mapping.user_id)throw error('Account identity does not match.',-32001);
+  return {...account,status:accessStatus(account),auth_method:provider};
+ }
  if(!account.user_id){
-  await stmt(env.DB,'UPDATE accounts SET user_id=? WHERE email=? AND user_id IS NULL',canonical,email).run();
+  await stmt(env.DB,'UPDATE accounts SET user_id=? WHERE email=? AND user_id IS NULL AND enabled=1 AND NOT EXISTS (SELECT 1 FROM accounts WHERE user_id=? AND email<>?)',canonical,email,canonical,email).run();
   account=await stmt(env.DB,'SELECT * FROM accounts WHERE email=?',email).first();
  }
+ if(accessStatus(account)==='inactive')throw disabledAccount();
  if(account.user_id!==canonical&&!(linkProof?.user_id===account.user_id&&linkProof.email===email))throw error('This email already has an account. Sign in with its existing provider, then link Google and ChatGPT in Settings.',-32001);
  await stmt(env.DB,'INSERT INTO account_identities (provider,subject,user_id,email) VALUES (?,?,?,?) ON CONFLICT(provider,subject) DO NOTHING',provider,subject,account.user_id,email).run();
  const bound=await stmt(env.DB,'SELECT user_id,email FROM account_identities WHERE provider=? AND subject=?',provider,subject).first();
  if(bound.user_id!==account.user_id||bound.email!==email)throw error('Account identity does not match.',-32001);
- return {...account,auth_method:provider};
+ return {...account,status:accessStatus(account),auth_method:provider};
 }
 function hostIdentity(request){
  const subject=request.headers.get('oai-authenticated-user-id');if(!subject)return null;
@@ -491,25 +501,27 @@ async function accountSettings(request,env,account,actor,auditState){
  if(account.role!=='owner')throw error('Only the owner can manage accounts.',-32001);
  if(request.method==='POST'){
   sameOrigin(request);const a=await readJSON(request,2000);
-  if(typeof a.enabled!=='boolean'||typeof a.account_id!=='string')throw error('Invalid account update.');
+  if(typeof a.account_id!=='string'||Object.keys(a).some(k=>!['account_id','status','enabled'].includes(k))||a.status!==undefined&&a.enabled!==undefined)throw error('Invalid account update.');
+  const status=a.status??(typeof a.enabled==='boolean'?(a.enabled?'active':'inactive'):null);
+  if(!['inactive','signed_up','active'].includes(status))throw error('Choose Inactive, Signed up, or Active.');
   const all=(await stmt(env.DB,'SELECT * FROM accounts').all()).results;let target;
   for(const row of all)if(await hash(row.email)===a.account_id){target=row;break;}
-  if(!target||!configuredAccounts(env).some(a=>a.email===target.email))throw error('Account not found.');
-  if(target.role==='owner'&&!a.enabled)throw error('The owner account must stay enabled.');
+  if(!target)throw error('Account not found.');
+  if(configuredAccounts(env).some(row=>row.email===target.email&&row.role==='owner')&&status!=='active')throw error('The owner account must stay enabled.');
   await securityAudit(env,actor,'account_update','attempt',a.account_id);
-  await stmt(env.DB,'UPDATE accounts SET enabled=? WHERE email=?',a.enabled?1:0,target.email).run();
+  await stmt(env.DB,'UPDATE accounts SET enabled=?,status=? WHERE email=?',status==='inactive'?0:1,status,target.email).run();
   await completionAudit(env,auditState,actor,'account_update','success',a.account_id);
  }else if(request.method!=='GET')return json({error:'Method not allowed'},405);
- const allowed=new Set(configuredAccounts(env).map(a=>a.email));
- const rows=(await stmt(env.DB,'SELECT email,role,enabled,user_id FROM accounts ORDER BY role DESC,email').all()).results.filter(a=>allowed.has(a.email));
- return auditJSON({accounts:await Promise.all(rows.map(async a=>({id:await hash(a.email),email:a.email,role:a.role,enabled:a.enabled,receiver_eligible:!!a.enabled&&!!a.user_id})))},auditState);
+ const configured=configuredAccounts(env);
+ const rows=(await stmt(env.DB,'SELECT email,role,enabled,user_id,status FROM accounts ORDER BY role DESC,email').all()).results.map(a=>({...a,role:configured.find(row=>row.email===a.email)?.role||'member'}));
+ return auditJSON({accounts:await Promise.all(rows.map(async a=>({id:await hash(a.email),email:a.email,role:a.role,enabled:a.enabled,status:accessStatus(a),receiver_eligible:accessStatus(a)==='active'&&!!a.user_id})))},auditState);
 }
 
 async function receiverManagement(request,env,account,actor){
  if(!['GET','POST','DELETE'].includes(request.method))return json({error:'Method not allowed'},405);
  if(request.method==='GET'){
-  const admin=account.role==='owner',allowed=new Set(configuredAccounts(env).map(row=>row.email));
-  const rows=(await stmt(env.DB,'SELECT rc.id,rc.name,rc.created,rc.expires,rc.owner,a.email FROM receiver_credentials rc JOIN accounts a ON a.user_id=rc.owner WHERE a.enabled=1 AND length(a.user_id)>0 AND (?=1 OR rc.owner=?) ORDER BY rc.created DESC,rc.id',admin?1:0,account.user_id).all()).results.filter(row=>allowed.has(row.email));
+  const admin=account.role==='owner';
+  const rows=(await stmt(env.DB,'SELECT rc.id,rc.name,rc.created,rc.expires,rc.owner,a.email FROM receiver_credentials rc JOIN accounts a ON a.user_id=rc.owner WHERE a.enabled=1 AND a.status=\'active\' AND length(a.user_id)>0 AND (?=1 OR rc.owner=?) ORDER BY rc.created DESC,rc.id',admin?1:0,account.user_id).all()).results;
   return json({receivers:rows.map(row=>({id:row.id,name:row.name,created:row.created,expires:row.expires,recipient:{email:row.email,is_self:row.owner===account.user_id},can_revoke:admin}))});
  }
  sameOrigin(request);const a=await readJSON(request,2000);
@@ -528,11 +540,11 @@ async function receiverManagement(request,env,account,actor){
   if(typeof a.account_id!=='string'||!/^[a-f0-9]{64}$/.test(a.account_id))throw error('Invalid recipient account.');
   if(account.role!=='owner'&&a.account_id!==await hash(account.email))throw error('Only the owner can create credentials for another account.',-32001);
   if(account.role==='owner'){
-   const rows=(await stmt(env.DB,'SELECT email,user_id,enabled FROM accounts').all()).results;
+   const rows=(await stmt(env.DB,'SELECT email,user_id,enabled,status FROM accounts').all()).results;
    recipient=null;for(const row of rows)if(await hash(row.email)===a.account_id){recipient=row;break;}
   }
  }
- if(!recipient?.user_id||!recipient.enabled||!configuredAccounts(env).some(row=>row.email===recipient.email))throw error('Recipient must be an enabled, initialized authorized account.',-32001);
+ if(!recipient?.user_id||accessStatus(recipient)!=='active')throw error('Recipient must be an Active account that has signed in.',-32001);
  const recipientInfo={account_id:await hash(recipient.email),email:recipient.email,is_self:recipient.user_id===account.user_id};
  const label=text(a.name,80).trim(),days=a.expires_in_days??30;
  if(!label||![1,7,30,90].includes(days))throw error('Provide a name and lifetime of 1, 7, 30 or 90 days.');
@@ -648,9 +660,9 @@ async function invitationManagement(request,env,account,actor){
   await stmt(env.DB,'DELETE FROM invitations WHERE id=?',id).run();
   await securityAudit(env,actor,'invitation_revoke','success',id);return json({revoked:true});
  }
- const rows=(await stmt(env.DB,'SELECT email,enabled FROM accounts').all()).results;let recipient;
+ const rows=(await stmt(env.DB,'SELECT email,enabled,status FROM accounts').all()).results;let recipient;
  for(const row of rows)if(await hash(row.email)===a.account_id){recipient=row;break;}
- if(!recipient?.enabled||!configuredAccounts(env).some(r=>r.email===recipient.email))throw error('Select an enabled authorized account.');
+ if(accessStatus(recipient)!=='active')throw error('Select an Active account.');
  const dot=a.dot_id===undefined?null:name(a.dot_id),discordId=text(a.discord_id,100);
  if(!await stmt(env.DB,'SELECT id FROM discords WHERE id=?',discordId).first())throw error('Select a configured Discord.');
  const id=crypto.randomUUID(),secret=randomSecret(),created=now(),expires=new Date(Date.now()+86400000).toISOString();
@@ -672,8 +684,8 @@ async function onboard(request,env,account,actor){
   if(typeof a.invite!=='string'||! /^[A-Za-z0-9_-]{43}$/.test(a.invite))throw error('Invalid invitation.');
   invite=await stmt(env.DB,'SELECT * FROM invitations WHERE secret_hash=? AND email=? AND expires>? AND redeemed_by IS NULL',await hash(a.invite),account.email,now()).first();
   if(!invite)throw error('Invitation is expired, used, revoked, or belongs to another account.',-32001);
-  const issuer=await stmt(env.DB,'SELECT email,enabled FROM accounts WHERE user_id=?',invite.created_by).first();
-  if(!issuer?.enabled||!configuredAccounts(env).some(a=>a.email===issuer.email&&a.role==='owner'))throw error('Invitation issuer is no longer an administrator.',-32001);
+  const issuer=await stmt(env.DB,'SELECT email,enabled,status FROM accounts WHERE user_id=?',invite.created_by).first();
+  if(accessStatus(issuer)!=='active'||!configuredAccounts(env).some(a=>a.email===issuer.email&&a.role==='owner'))throw error('Invitation issuer is no longer an administrator.',-32001);
  }
  const discordId=invite?.discord_id||text(a.discord_id,100);
  const connection=await stmt(env.DB,'SELECT id,name FROM discords WHERE id=?',discordId).first();if(!connection)throw error('Select an available Discord destination.');
@@ -703,6 +715,48 @@ async function onboard(request,env,account,actor){
  if(!await stmt(env.DB,gate,...gateArgs).first())throw Object.assign(error('Handle is taken, setup already completed, invitation already used, or token limit reached. Choose another handle or check Agents and Tokens.'),{status:409});
  const wake=await wakeStatus(env.DB,account.user_id);
  return json({registered:true,dot_id:dot,token,secret,subscription_required:wake.subscription_required,wake},201);
+}
+
+// Signed-up accounts get a deliberately separate, minimal surface. Never pass
+// these requests to the active tools, onboarding, wake, token or receiver paths.
+async function signedUpRequest(request,env,account,path,rpc,actor,auditState){
+ const denied=()=>error('Your account is Signed up. An administrator must make it Active to use this feature.',-32001,'account_signed_up');
+ if(path==='/api/account'&&request.method==='GET')return json({email:maskEmail(account.email),auth_method:account.auth_method,account_status:'signed_up',can_manage_accounts:false,needs_setup:false});
+ if(!['/api/tool','/mcp'].includes(path)||request.method!=='POST')throw denied();
+ sameOrigin(request);const body=rpc||await readJSON(request);
+ if(path==='/mcp'&&body.method!=='tools/call')throw denied();
+ const operation=path==='/mcp'?body.params?.name:body.name,args=(path==='/mcp'?body.params?.arguments:body.arguments)||{};
+ const allowed={list_dots:[],register_dot:['dot_id','agent_type'],update_agent:['dot_id','handle','agent_type'],delete_agent:['dot_id']};
+ if(!Object.hasOwn(allowed,operation))throw denied();
+ if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(k=>!allowed[operation].includes(k)))throw denied();
+ const db=env.DB,owner=account.user_id;
+ await securityAudit(env,actor,operation,'attempt');let value;
+ if(operation==='list_dots'){
+  value=(await stmt(db,"SELECT id AS dot_id,agent_type,1 AS is_owned,1 AS can_manage FROM dots WHERE owner=? ORDER BY id",owner).all()).results;
+ }else{
+  const id=name(args.dot_id),type=args.agent_type||'dot';if(!['dot','agent'].includes(type))throw error('Choose Dot or Non-Dot Agent.');
+  if(operation==='register_dot'){
+   // One initial agent only. No destination, webhook, token, subscription or inbox.
+   const inserted=await stmt(db,"INSERT INTO dots (id,owner,created,agent_type) SELECT ?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM dots WHERE owner=?) ON CONFLICT(id) DO NOTHING RETURNING id",id,owner,now(),type,owner).first();
+   if(!inserted)throw error('You can create one agent while Signed up. Choose an available handle, or edit your existing agent.');
+   value={dot_id:id,agent_type:type,registered:true,activation_required:true};
+  }else{
+   const dot=await stmt(db,'SELECT id,agent_type,discord_id,webhook_url FROM dots WHERE id=? AND owner=?',id,owner).first();
+   if(!dot)throw error('You can only manage your own agent.',-32001);
+   // An account demoted from Active cannot modify configured identities or remove
+   // their resources through this limited setup path. Nothing is destroyed.
+   if(dot.discord_id||dot.webhook_url||await stmt(db,'SELECT id FROM api_tokens WHERE dot=? LIMIT 1',id).first()||await stmt(db,'SELECT id FROM temporary_inbox WHERE dot=? AND owner=? LIMIT 1',id,owner).first()||await stmt(db,'SELECT id FROM subscriptions WHERE owner=? LIMIT 1',owner).first())throw denied();
+   if(operation==='update_agent'){
+    const handle=name(args.handle);if(handle!==id&&await stmt(db,'SELECT id FROM dots WHERE id=?',handle).first())throw error('This handle is already registered.');
+    await env.DB.batch([stmt(db,'UPDATE dots SET id=?,agent_type=? WHERE id=? AND owner=?',handle,args.agent_type||dot.agent_type,id,owner),stmt(db,'UPDATE accounts SET primary_dot=NULL WHERE user_id=? AND primary_dot=?',owner,id)]);
+    value={saved:true,dot_id:handle};
+   }else{
+    await env.DB.batch([stmt(db,'UPDATE accounts SET primary_dot=NULL WHERE user_id=? AND primary_dot=?',owner,id),stmt(db,'DELETE FROM dots WHERE id=? AND owner=?',id,owner)]);value={deleted:true};
+   }
+  }
+ }
+ await completionAudit(env,auditState,actor,operation,'success');
+ return path==='/mcp'?auditJSON({jsonrpc:'2.0',id:body.id??null,result:{content:[{type:'text',text:JSON.stringify(value)}],isError:false}},auditState):auditJSON(value,auditState);
 }
 
 // Provider credentials stay server-side; database access/backups require secret-grade protection.
@@ -773,6 +827,7 @@ export default {async fetch(request,env){
   if(token){actor='token:'+token.id;owner={[GLOBAL]:true,token};if(!['/api/wake','/api/tool','/mcp'].includes(path))throw error('This token can only send wakes.',-32001);}
   else {account=await accountAccess(request,env);owner=account.user_id;actor=await accountActor(owner);}
   if(account?.auth_method==='google'&&path==='/mcp'&&!request.headers.get('origin'))throw error('Same-origin request required for Google sessions.',-32001);
+  if(account?.status==='signed_up')return await signedUpRequest(request,env,account,path,p,actor,auditState);
   // Listing credentials must not prune or otherwise mutate them. Other traffic retains cleanup.
   if(path!=='/api/receivers'||request.method!=='GET')await maintenance(env);
   if(path==='/api/auth/google-settings'){action='google_configuration';return await googleSettings(request,env,account,actor,baseEnv);}
@@ -791,7 +846,7 @@ export default {async fetch(request,env){
    }else if(request.method!=='GET')return json({error:'GET or POST required'},405);
    const status=await wakeStatus(env.DB,owner);const {dot_id,selection_required,...wake}=status;
    const linked=await stmt(env.DB,"SELECT subject FROM account_identities WHERE provider='host' AND user_id=? LIMIT 1",owner).first();
-   return json({email:maskEmail(account.email),auth_method:account.auth_method,host_linked:Boolean(linked)||account.auth_method==='host',can_manage_accounts:account.role==='owner',needs_setup:status.state==='profile_required',profile:{dot_id,selection_required},wake});
+   return json({email:maskEmail(account.email),auth_method:account.auth_method,host_linked:Boolean(linked)||account.auth_method==='host',can_manage_accounts:account.role==='owner',account_status:account.status,needs_setup:status.state==='profile_required',profile:{dot_id,selection_required},wake});
   }
   if(path==='/api/accounts'){action='accounts';return await accountSettings(request,env,account,actor,auditState);}
   if(path==='/api/test-wake'){action='test_wake';return await testWake(request,env,account,actor,auditState);}
@@ -833,6 +888,6 @@ export default {async fetch(request,env){
   const message=applicationError?e.message:'Operation failed';const status=applicationError?(e.status||(e.code===-32001?(actor==='anonymous'?401:403):400)):503;
   if(path==='/mcp'&&p)return json({jsonrpc:'2.0',id:p.id??null,error:{code:applicationError?e.code:-32603,message,...(applicationError&&e.reason?{data:{reason:e.reason}}:{})}},status===400?200:status);
   if(path==='/api/receiver')return json({error:{code:applicationError?e.code:-32603,message,...(applicationError&&e.reason?{data:{reason:e.reason}}:{})}},status===400?200:status);
-  return json({error:message},status);
+  return json({error:message,...(applicationError&&e.reason?{reason:e.reason}:{})},status);
  }
 },async scheduled(event,env,ctx){await maintenance(env);}};

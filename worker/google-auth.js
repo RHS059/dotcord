@@ -139,7 +139,9 @@ export async function handleGoogleAuth(request, env, { resolveAccount, audit = a
     return new Response(null, { status: 303, headers });
   } catch (error) {
     try { await audit('google_signin', 'denied'); } catch { /* Never expose provider/storage errors. */ }
-    const message = error?.code === 'GOOGLE_ACCOUNT_LINK_REQUIRED'
+    const message = error?.reason === 'account_disabled'
+      ? 'This account is disabled. Ask an administrator to re-enable it.'
+      : error?.code === 'GOOGLE_ACCOUNT_LINK_REQUIRED'
       ? 'This email already has an account. Sign in with its existing ChatGPT account, then choose Continue with Google to link them.'
       : 'Google sign-in could not be completed. Restart sign-in or ask the administrator to check your account access.';
     return response({ error: message }, 403, { 'Set-Cookie': cookie(FLOW_COOKIE, '', 0) });

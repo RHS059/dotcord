@@ -1,4 +1,5 @@
 // Independent synthetic fault injection only. Never uses live credentials or network.
+import {seedActiveAccounts} from './helpers/accounts.mjs';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync,readdirSync} from 'node:fs';
@@ -24,6 +25,7 @@ function fixture(fault){
  const attempted=[];
  const DB={async batch(statements){sql.exec('BEGIN');try{const result=[];for(const s of statements)result.push(await s.run());sql.exec('COMMIT');return result;}catch(e){sql.exec('ROLLBACK');throw e;}},prepare(q){return {bind(...args){return {first:async()=>sql.prepare(q).get(...args)||null,all:async()=>({results:sql.prepare(q).all(...args)}),run:async()=>{if(q.startsWith('INSERT INTO security_audit')){const event={actor:args[2],action:args[3],outcome:args[4],resource:args[5]};attempted.push(event);if(fault(event))throw Error('Synthetic audit storage unavailable');}return sql.prepare(q).run(...args);}}}}}};
  const env={DB,AUTHORIZED_ACCOUNTS:JSON.stringify([{email:'owner@example.test',role:'owner'},{email:'member@example.test',role:'member'}])};
+ seedActiveAccounts(sql,env);
  const calls=[];
  globalThis.fetch=async(url,options)=>{calls.push({url,method:options.method});if(url.startsWith(hook))return Response.json({id:message,channel_id:channel});if(url.startsWith('https://chatgpt.com/mock-')){const body=JSON.parse(options.body);return body.type==='verification'?Response.json({challenge:body.challenge}):new Response(null,{status:204});}throw Error('Unexpected mocked fetch destination');};
  async function request(path,body,{bearer=false,method='POST'}={}){const headers={'content-type':'application/json',origin:'https://relay.test'};if(bearer)headers.authorization='Bearer '+token;else {headers['oai-authenticated-user-id']='owner';headers['oai-authenticated-user-email']='owner@example.test';}const response=await worker.fetch(new Request('https://relay.test'+path,{method,headers,body:JSON.stringify(body)}),env);return {status:response.status,value:await response.json(),audit_header:response.headers.get('x-dotcord-audit-warning')};}

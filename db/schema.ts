@@ -3,7 +3,7 @@ export const dots = sqliteTable('dots',{id:text('id').primaryKey(),agentType:tex
 export const subscriptions = sqliteTable('subscriptions',{id:text('id').primaryKey(),owner:text('owner').notNull(),dot:text('dot').notNull(),url:text('url').notNull(),secret:text('secret').notNull(),expires:text('expires').notNull(),scope:text('scope').notNull().default('handle'),receiverId:text('receiver_id'),receiverSecretHash:text('receiver_secret_hash'),receiverRevision:integer('receiver_revision').notNull().default(0),receiverLineage:text('receiver_lineage')});
 export const discords = sqliteTable('discords',{id:text('id').primaryKey(),owner:text('owner').notNull(),name:text('name').notNull(),connectionUrl:text('connection_url').notNull(),guildId:text('guild_id').notNull(),channelId:text('channel_id').notNull(),botToken:text('bot_token')});
 
-export const accounts = sqliteTable('accounts',{email:text('email').primaryKey(),userId:text('user_id'),primaryDot:text('primary_dot').unique(),role:text('role').notNull(),enabled:integer('enabled').notNull().default(1)});
+export const accounts = sqliteTable('accounts',{email:text('email').primaryKey(),userId:text('user_id'),primaryDot:text('primary_dot').unique(),role:text('role').notNull(),enabled:integer('enabled').notNull().default(1),status:text('status').notNull().default('active')});
 
 export const apiTokens = sqliteTable('api_tokens',{id:text('id').primaryKey(),name:text('name').notNull(),prefix:text('prefix').notNull(),tokenHash:text('token_hash').notNull().unique(),created:text('created').notNull(),owner:text('owner'),expires:text('expires'),dot:text('dot')});
 
