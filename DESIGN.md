@@ -28,3 +28,8 @@ Use official shadcn/ui New York components with React and Tailwind. Keep the war
 Handle registration is the user-facing wakeup setup. Do not expose subscription setup buttons, copy instructions, or a separate wakeup setup step. Platform event delivery still needs to be established before wakeups can be claimed working.
 
 One combined Agents list replaces separate Dots/Non-Dot Agents tabs. A ChatGPT Dot switch determines agent type in creation and row editing.
+
+
+## Current City Sunset design
+
+The October 2026 redesign supersedes the historical layout descriptions above. Use the dark-default City Sunset tokens in src/index.css, the supplied public/assets/sidebar-bg.png artwork, 4px maximum control corners, accessible custom selectors, responsive agent master/detail workspace, and dedicated public/app routes. Theme choice persists locally. See docs/UI-REDESIGN.md for current behavior and backend-bound adaptations.

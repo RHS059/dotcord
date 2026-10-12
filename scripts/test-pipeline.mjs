@@ -223,7 +223,7 @@ try {
   assert.deepEqual(deliveryOnly(gone.mention_delivery.results), [{handle: 'receiver', status: 'gone', attempts: 1}]);
   assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM subscriptions').get().n, 0);
 
-  assert.deepEqual(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(x => x.name), ['account_identities', 'account_onboarding', 'accounts', 'api_tokens', 'auth_sessions', 'discords', 'dots', 'google_oauth_settings', 'invitations', 'oauth_states', 'receiver_credentials', 'receiver_lineages', 'security_audit', 'security_maintenance', 'subscriptions', 'temporary_inbox', 'wake_limits', 'wake_tests']);
+  assert.deepEqual(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(x => x.name), ['account_identities', 'account_onboarding', 'accounts', 'api_tokens', 'auth_sessions', 'discords', 'dots', 'external_wake_receipts', 'google_oauth_settings', 'invitations', 'oauth_states', 'receiver_credentials', 'receiver_lineages', 'security_audit', 'security_maintenance', 'subscriptions', 'temporary_inbox', 'wake_limits', 'wake_tests']);
   for (const table of ['accounts', 'api_tokens', 'discords', 'dots', 'subscriptions']) {
     assert.ok(!JSON.stringify(sql.prepare('SELECT * FROM ' + table).all()).includes(content), 'No posted content persisted');
   }

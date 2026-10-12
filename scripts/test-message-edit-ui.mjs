@@ -8,7 +8,7 @@ const calls=[];let post=()=>Response.json({sent:true,url:'https://discord.com/ch
 w.fetch=async(url,opts)=>{
  if(url==='/api/account')return Response.json({can_manage_accounts:false});
  const data=JSON.parse(opts.body);
- if(data.name==='list_dots')return Response.json([{dot_id:'sample',discord_id:'one',webhook_configured:1,can_manage:1},{dot_id:'other',discord_id:'one',webhook_configured:1,can_manage:0}]);
+ if(data.name==='list_dots')return Response.json([{dot_id:'sample',is_owned:1,discord_id:'one',webhook_configured:1,can_manage:1},{dot_id:'other',is_owned:0,discord_id:'one',webhook_configured:1,can_manage:0}]);
  if(data.name==='list_discords')return Response.json([{id:'one',name:'Team Discord',bot_configured:1}]);
  calls.push(data);assert.equal(data.name,'edit_discord_message');return await post();
 };
@@ -18,9 +18,8 @@ async function until(check){for(let i=0;i<200;i++){if(check())return;await new P
 const click=e=>{assert.ok(e);e.dispatchEvent(new w.MouseEvent('click',{bubbles:true}));};
 async function input(s,v){const e=el(s);Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?w.HTMLTextAreaElement.prototype:w.HTMLInputElement.prototype,'value').set.call(e,v);e.dispatchEvent(new w.Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,0));}
 const submit=()=>el('#message-body').closest('form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
-await until(()=>el('#message-agent')&&!el('#message-agent').disabled);
+await until(()=>el('#message-body')&&!w.document.body.textContent.includes('Loading…'));assert.equal(el('#message-agent'),null,'Non-admin agent selector is absent');
 el('#message-mode').value='edit';el('#message-mode').dispatchEvent(new w.Event('change',{bubbles:true}));await until(()=>btn('Save edit'));
-el('#message-agent').dispatchEvent(new w.KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));await until(()=>el('[role=option]'));assert.equal(w.document.querySelectorAll('[role=option]').length,1,'Edit selector restricts agent ownership');click(el('[role=option]'));await until(()=>!el('[role=listbox]'));
 await input('#message-body','Replacement @other');assert.ok(btn('Save edit').disabled);await input('#message-id','bad');assert.ok(btn('Save edit').disabled);assert.equal(calls.length,0);
 await input('#message-id','345678901234567890');await input('#message-thread','456789012345678901');let resolve;post=()=>new Promise(r=>{resolve=r;});submit();submit();assert.equal(calls.length,1);await until(()=>btn('Updating…'));assert.ok(el('#message-mode').disabled);assert.deepEqual(calls[0].arguments,{dot_id:'sample',text:'Replacement @other',message_id:'345678901234567890',thread_id:'456789012345678901'});
 resolve(Response.json({edited:true,message_id:'345678901234567890',wake_sent:false,url:'https://discord.com/channels/123456789012345678/234567890123456789/345678901234567890'}));await until(()=>el('#message-body').value==='');assert.ok(w.document.body.textContent.includes('Message updated. No wake sent.'));assert.equal(el('a[href*="discord.com/channels"]').textContent,'View in Discord');

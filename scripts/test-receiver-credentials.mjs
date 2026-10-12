@@ -70,7 +70,7 @@ try{
  assert.ok(ownerList.some(r=>r.recipient.is_self&&r.can_revoke));
  assert.deepEqual(sql.prepare('SELECT * FROM receiver_credentials ORDER BY id').all(),beforeList);
  assert.ok(!JSON.stringify(ownerList).includes(selected.secret));
- for(const row of ownerList){assert.deepEqual(Object.keys(row).sort(),['can_revoke','created','expires','id','name','recipient']);assert.deepEqual(Object.keys(row.recipient).sort(),['email','is_self']);}
+ for(const row of ownerList){assert.deepEqual(Object.keys(row).sort(),['auth_header','can_edit','can_revoke','created','dot_id','expires','id','name','needs_configuration','provider','recipient','source']);assert.deepEqual(Object.keys(row.recipient).sort(),['email','is_self']);}
  const memberList=(await (await management('beta','GET')).json()).receivers;
  assert.ok(memberList.every(r=>r.recipient.email==='beta@example.test'&&!r.can_revoke));
  // Orphaned, uninitialized and persisted-disabled accounts are never admin-list recipients.

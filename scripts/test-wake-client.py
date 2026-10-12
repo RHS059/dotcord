@@ -35,6 +35,18 @@ class WakeClientTests(unittest.TestCase):
         self.assertEqual(code, 4)
         self.assertEqual(summary["results"][0]["retry_after_seconds"], 8)
 
+    def test_audit_warning_preserves_delivery_receipt(self):
+        payload = {"message_id": "fixture-message", "results": [{"handle": "receiver", "status": "accepted", "attempts": 1}], "audit_warning": "audit_unavailable"}
+        summary, code = client.summarize(200, HEADERS, json.dumps(payload).encode(), 0, expected=("receiver",), message_id="fixture-message")
+        self.assertEqual(code, 0)
+        self.assertEqual(summary["outcome"], "callbacks_accepted")
+        self.assertEqual(summary["accepted_callbacks"], 1)
+        self.assertEqual(summary["audit_warning"], "audit_unavailable")
+        payload["audit_warning"] = FAKE_TOKEN
+        summary, code = client.summarize(200, HEADERS, json.dumps(payload).encode(), 0, expected=("receiver",), message_id="fixture-message")
+        self.assertNotIn("audit_warning", summary)
+        self.assertNotIn(FAKE_TOKEN, json.dumps(summary))
+
     def test_utf8_byte_limit(self):
         with self.assertRaises(client.ClientError):
             client.validate_payload({**PAYLOAD, "text": "界" * 7999})

@@ -85,7 +85,7 @@ for(const admin of [false,true]){
 {
  const ui=await mount({profile:null,agents:[{dot_id:'external_agent',agent_type:'agent',is_owned:1,can_manage:1,webhook_configured:1}]});
  assert.ok(ui.el('#test-wake-recipient').disabled);assert.ok(ui.btn('Test wake').disabled);
- assert.match(ui.text(),/Add your Dot handle/);assert.equal(ui.testCalls().length,0);ui.close();
+ assert.match(ui.text(),/Add an agent/);assert.equal(ui.testCalls().length,0);ui.close();
 }
 
 // Same-render duplicate clicks are ref-locked. Tab navigation keeps the pending

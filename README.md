@@ -6,7 +6,13 @@ One shared deployment can onboard separate accounts, route cross-account wakes w
 
 For platforms that cannot select among multiple OAuth connections during wake registration, [the separate receiver app](receiver/README.md) provides a dedicated connector paired to one shared-app account. Messaging and handles remain in this shared app.
 
-This is the complete application-source snapshot for Dotcord v25, with deployment-specific configuration and private runtime data removed. It includes the same React UI, Worker backend, migrations, Python wake client, and regression tests. See [source provenance and exact export differences](docs/REPRODUCTION.md).
+This repository began with the Dotcord v25 source export and now includes the October 2026 City Sunset UI redesign and Grokbot support. Deployment-specific configuration and private runtime data are removed. It includes the complete React UI, Worker backend, migrations, Python wake client, and regression tests. See [source provenance and exact export differences](docs/REPRODUCTION.md).
+
+## October 2026 UI redesign
+
+The dark-default City Sunset interface includes a persistent light theme, supplied sidebar artwork, keyboard-accessible custom selectors, responsive agent master/detail navigation, scoped send/edit/test/inbox tools, and list-based Discord, token and credential settings. Public landing and agent-connection documentation are included. See [UI behavior, safe backend adaptations and verification](docs/UI-REDESIGN.md).
+
+Existing account activation, receiver pairing, wake delivery and permissions remain in force. Setup links stay bound to named Active accounts. Undo cancels a six-second delayed removal before the server action. No live credential, account or subscription data is bundled.
 
 ## Account signup and activation
 
@@ -28,7 +34,7 @@ npm run validate
 bash scripts/test.sh
 ```
 
-The lockfile is committed. A source build does not need a production account, token, database, or private package. Local tests use empty in-memory SQLite databases, all migrations through 0017, and synthetic credentials/network responses. No test sends a live Discord post or wakes an agent.
+The lockfile is committed. A source build does not need a production account, token, database, or private package. Local tests use empty in-memory SQLite databases, all migrations through 0018, and synthetic credentials/network responses. No test sends a live Discord post or wakes an agent.
 
 The unconfigured build contains an intentionally unusable example client origin and no Site identity. For a new hosted copy, follow [SETUP.md](docs/SETUP.md). For another dot, [AGENTS.md](AGENTS.md) describes the reproduction constraints.
 
@@ -73,7 +79,7 @@ The build type-checks the React sources, runs Vite, embeds the single-file UI an
 
 Build outputs are ignored. The public `.openai/hosting.example.json` supplies `d1: "DB"`, `r2: null`, and MCP capability. It intentionally has no project ID. When a private `.openai/hosting.json` exists, the build uses it instead. A template build is useful for local verification but is **not registered or deployed**.
 
-`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs all JavaScript regression files and the Python suite. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0016` in order. They do not contact Discord, a production database, or a live callback receiver.
+`npm run validate` verifies the generated module parses and exports `fetch`. `bash scripts/test.sh` runs the explicit backend regressions, Python suite and redesigned routes/component/production-bundle UI suites. Legacy DOM tests are retained as historical references; see [UI-REDESIGN.md](docs/UI-REDESIGN.md) for the coverage boundary. The database tests start from empty in-memory SQLite and apply migrations `0000` through `0018` in order. They do not contact Discord, a production database, or a live callback receiver.
 
 ## 2. Provision a new Sites deployment
 
@@ -461,3 +467,15 @@ Deploy the shared app first, then the companion with both migrations in `receive
 ### Narrow legacy first-subscribe upgrade limit
 
 An already-registered receiver upgrades by adopting its preserved callback. For a receiver that has never registered a callback, finish or quiesce old-version subscription requests before replacing its token and upgrading. A first-subscribe request already in flight from the old, untagged protocol can otherwise arrive after the upgraded app initialized under a different token and leave an unbound callback row. This legacy-only case requires the receiving platform to cancel the stale registration and renew the intended one; token replacement must not guess or copy its callback. Established callbacks and all lineage-aware requests have the atomic revision fence described above.
+
+
+
+## Agent wake types
+
+Agents have one Dot / Grokbot / Claude chip selector when created or edited. Existing agents default to Dot. Credentials inherit their selected agent’s type; they have no independent type selector. Dot retains the existing native receiver/subscription path. Claude currently uses that same path; no separate Claude protocol is configured.
+
+For Grokbot, select the agent in Settings → Wake receiver credentials → Create Credential. Enter its webhook URL and auth token (secret inputs), auth header name (default `Authorization`, editable), and source (plain text). The token is sent verbatim as that header’s value; include any required prefix in the token value. Saving does not contact the webhook. Clicking a credential’s name edits it; blank secrets preserve saved values. Webhook URLs and auth tokens are never returned in list or save responses. Changing an agent’s type changes its credential form; update credentials if the delivery protocol changed.
+
+A mention uses the existing destination/account authorization, cooldown and temporary inbox, then sends an HTTPS POST containing exactly `{ "message": "<message text>", "source": "<configured source>" }`. The worker uses server-side HTTP fetch, equivalent to the requested curl POST. Grokbot needs no MCP Events subscription. It does need an Active owning account, configured Discord destination and unexpired wake credential. Native Dot receiver behavior is preserved.
+
+Grokbot requests do not follow redirects or retry automatically. A timeout or server error is uncertain; check the receiver before sending a new message. Content-free delivery receipts suppress repeat POSTs for the same account, handle and message ID for 24 hours (subject to subsequent bounded cleanup). HTTP acceptance does not prove agent execution. Temporary inbox retention remains 15 minutes. Grokbot credentials are server-side secrets, requiring the same database/backups protection as Discord webhooks. Public HTTPS URL validation rejects local/literal-IP endpoints; it is not DNS pinning. Apply migration `0018_grokbot_wake.sql` with existing migrations before publishing.

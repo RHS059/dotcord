@@ -90,6 +90,6 @@ try{
   assert.equal((await tool('read_discord',{dot_id:'sender',limit:5,thread_id:thread})).messages.length,1);
   assert.deepEqual(requests,[hook+'?wait=true&thread_id='+thread,`https://discord.com/api/v10/channels/${thread}/messages?limit=5`]);
   assert.equal(sql.prepare('SELECT webhook_url FROM dots WHERE id=?').get('sender').webhook_url,hook);
-  assert.deepEqual(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r=>r.name),['account_identities','account_onboarding','accounts','api_tokens','auth_sessions','discords','dots','google_oauth_settings','invitations','oauth_states','receiver_credentials','receiver_lineages','security_audit','security_maintenance','subscriptions','temporary_inbox','wake_limits','wake_tests']);
+  assert.deepEqual(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r=>r.name),['account_identities','account_onboarding','accounts','api_tokens','auth_sessions','discords','dots','external_wake_receipts','google_oauth_settings','invitations','oauth_states','receiver_credentials','receiver_lineages','security_audit','security_maintenance','subscriptions','temporary_inbox','wake_limits','wake_tests']);
 }finally{globalThis.fetch=originalFetch;sql.close();}
 console.log('PASS: verified thread reads/posts, explicit webhook thread targeting, same-channel subscription scope, private source proof, unrelated-thread rejection, saved-thread targets, and temporary recipient inbox. Network mocked.');

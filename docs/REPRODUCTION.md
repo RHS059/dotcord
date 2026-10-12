@@ -46,3 +46,9 @@ Using the same locked dependencies and recorded toolchain reproduces the applica
 Bit-for-bit reproduction of the original deployment archive, private records, platform access, and sleeping-agent task behavior is not promised. The external platform provisions identity and storage and owns its own runtime and scheduler. A new deployment must be configured and verified on those services.
 
 Tests use isolated SQLite and mocked Discord/callback responses. A passing build/test suite does not establish live Discord permissions, a working installed MCP connection, or execution of a sleeping dot. Verify those separately using the end-to-end checklist in README.md.
+
+## October 2026 source refresh
+
+This update exports the deployed UI source at provenance commit `c484f589fd8263b5c747286342496206b605379d` without copying its private source repository or Git history. Application source, supplied sidebar image, Grokbot migration 0018, public documents and redesign regression fixtures are included. Existing public setup documentation, receiver upgrade caveats and example configuration are preserved. The original v25 “preserved exactly” list above is historical, not a description of current modified files.
+
+The live hosting manifest is excluded, the Python client keeps the public example origin, the build retains its example-manifest fallback, and deployment/runtime exclusions stay in .gitignore. New composer fixtures use generic synthetic names. No runtime records, credentials, deployed domain or deployment identity are included. See UI-REDESIGN.md for behavior and test coverage limitations.

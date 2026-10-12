@@ -145,6 +145,8 @@ def summarize(status: int, headers: dict, body: bytes, curl_code: int, probe: bo
             return summary, 0
         summary.update(outcome="authentication_rejected", detail="Dotcord rejected authentication. Check the token privately; do not paste it into chat or logs.")
         return summary, 2
+    if data.get("audit_warning") == "audit_unavailable":
+        summary["audit_warning"] = "audit_unavailable"
     if status == 429 and data.get("message_id") == message_id and isinstance(data.get("results"), list):
         retry = headers.get("retry-after", "")
         if re.fullmatch(r"[0-9]{1,2}", retry) and 1 <= int(retry) <= 15:

@@ -5,7 +5,7 @@ const html=readFileSync('client-build/index.html','utf8'),script=html.match(/<sc
 const invite='i'.repeat(43),wake='w'.repeat(43);
 const until=async f=>{for(let i=0;i<200;i++){if(f())return;await new Promise(r=>setTimeout(r,10));}throw Error('Onboarding UI timed out');};
 let dom;
-function boot({signedIn=false,owner=false,fail=false,stored=false,conflict=false}={}){
+function boot({signedIn=false,owner=false,fail=false,stored=false,conflict=false,configured=false}={}){
  dom?.window.close();dom=new JSDOM(html,{url:'https://shared.test/'+(owner?'?tab=settings':stored?'':'#invite='+invite),runScripts:'outside-only',pretendToBeVisual:true});const w=dom.window;
  w.ResizeObserver=class{observe(){}unobserve(){}disconnect(){}};w.HTMLElement.prototype.scrollIntoView=function(){};w.matchMedia=()=>({matches:false,addListener(){},removeListener(){}});
  if(stored)w.sessionStorage.setItem('dotcord.pending-invitation',invite);
@@ -13,7 +13,7 @@ function boot({signedIn=false,owner=false,fail=false,stored=false,conflict=false
  w.fetch=async(path,options={})=>{
   calls.push({path,body:options.body?JSON.parse(options.body):null,method:options.method});
   if(path==='/api/auth/providers')return Response.json({google:true,chatgpt:true});
-  if(path==='/api/account')return Response.json(signedIn?{can_manage_accounts:owner}:{error:'Sign in to continue.'},{status:signedIn?200:401});
+  if(path==='/api/account')return Response.json(signedIn?{can_manage_accounts:owner,needs_setup:!configured,profile:configured?{dot_id:'existing'}:null,wake:configured?{state:'ready'}:null}:{error:'Sign in to continue.'},{status:signedIn?200:401});
   if(path==='/api/accounts')return Response.json({accounts:[{id:'account',email:'aella@example.test',enabled:1,role:'member'}]});
   if(path==='/api/tool'){const name=JSON.parse(options.body).name;return Response.json(name==='list_discords'?[{id:'shared',name:'Team',can_manage:1}]:[]);}
   if(path==='/api/onboarding'){
@@ -48,10 +48,11 @@ click(x.w,button(x.w,'Join Dotcord'));await until(()=>x.w.document.body.textCont
 assert.equal(x.w.document.querySelector('#onboarding-handle').value,'chosen_name');assert.equal(x.w.sessionStorage.getItem('dotcord.pending-invitation'),invite);assert.equal(x.w.document.querySelector('#onboarding-token'),null);assert.equal(button(x.w,'Join Dotcord').disabled,false);
 x=boot({signedIn:true,fail:true});await until(()=>x.w.document.body.textContent.includes('Invitation belongs to another account.'));assert.equal(x.w.document.querySelector('#onboarding-token'),null);assert.equal(x.w.sessionStorage.getItem('dotcord.pending-invitation'),invite);
 click(x.w,button(x.w,'Dismiss invitation'));await until(()=>x.w.sessionStorage.length===0);
-x=boot({signedIn:true,owner:true});await until(()=>x.w.document.querySelector('#invite-account'));
-for(const [id,value] of [['invite-account','account'],['invite-discord','shared']]){const el=x.w.document.getElementById(id);el.value=value;el.dispatchEvent(new x.w.Event('change',{bubbles:true}));}
-assert.equal(x.w.document.getElementById('invite-handle'),null,'Recipient chooses handle, not administrator');await new Promise(r=>setTimeout(r,0));
-click(x.w,button(x.w,'Create invitation'));await until(()=>x.w.document.querySelector('#invite-link'));
-assert.equal(x.w.document.querySelector('#invite-link').value,'https://shared.test/#invite='+invite);assert.equal(x.w.localStorage.length,0);assert.equal(x.w.sessionStorage.length,0);
-click(x.w,button(x.w,'Revoke invitation'));await until(()=>!x.w.document.querySelector('#invite-link'));assert.ok(x.calls.some(c=>c.path==='/api/invitations'&&c.method==='DELETE'));
-dom.window.close();console.log('PASS onboarding UI: invitation fragment removal/sign-in persistence, preview then explicit recipient-selected handle redemption, one-time secret display/clearing, wrong-account recovery, owner creation/revocation. API mocked.');
+x=boot({signedIn:true,configured:true,stored:true});await until(()=>x.calls.some(c=>c.path==='/api/tool'));await new Promise(r=>setTimeout(r,30));
+assert.equal(x.w.document.querySelector('#onboarding-handle'),null,'Existing account hides setup even with a saved invitation');
+assert.equal(x.calls.some(c=>c.path==='/api/onboarding'),false);
+x=boot({signedIn:true,owner:true});await until(()=>x.calls.some(c=>c.path==='/api/accounts'));await new Promise(r=>setTimeout(r,20));
+assert.equal(x.w.document.querySelector('#invite-account'),null);
+assert.equal(x.w.document.querySelector('#onboarding-handle'),null);
+assert.equal(x.calls.some(c=>c.path==='/api/invitations'),false);
+dom.window.close();console.log('PASS onboarding UI: invitation persistence, explicit redemption, secret clearing, wrong-account recovery, removed invitation card and hidden admin setup. API mocked.');

@@ -1,3 +1,82 @@
+## City Sunset UI redesign — 2026-10-12
+
+- Add dark-default persistent themes, supplied sidebar artwork, responsive agent master/detail, mobile navigation and accessible custom selectors.
+- Keep per-agent composer, wake-test and inbox workflows on their existing real APIs, including uncertain-result replay guards and edit-without-wake semantics.
+- Add list-based Discord, credentials, tokens and account settings; removal Undo cancels before the delayed server mutation.
+- Add public landing/setup documentation, real route metadata and app noindex behavior, plus a read-only owner-only profile metadata endpoint.
+- Retain exact authorization and secret-handling boundaries; document backend-required design adaptations in docs/UI-REDESIGN.md.
+- Verify with 27 backend suites, 19 Python tests, 23 production UI cases, component/Undo and routes/assets checks using synthetic data. Historical DOM-selector suites remain retained, not all ported.
+
+## Logo colors
+
+Changed the logo’s dark shapes to primary coral #ee5d6c, with #fdf7ef light shapes, including the favicon.
+
+## Header spacing
+
+Reduced spacing below the Dotcord brand and page headings to 8px at all screen sizes.
+
+## Header alignment
+
+Aligned menu branding and page headings in 44px rows with matching 27px, 600-weight text and shared top spacing.
+
+## Page background
+
+Set the page background to #ebdcc9.
+
+## Warm surfaces, compact agent header, and logo rendering
+
+Moved each agent’s type chip alongside its name, stacked sender/thread fields, and removed thread helper text. Replaced white/gray surfaces with gold tints and dark text with near-black purple. Permitted embedded images in the page image policy so the SVG logo and favicon render.
+
+## Dotcord logo
+
+Installed the supplied vector logo in the sidebar, sign-in and signed-up account screens, and browser tab icon.
+
+## Admin settings cleanup
+
+Removed the account-status explanation and hid Sign-in settings for administrators.
+
+## Agents workspace
+
+Agents now form a vertical list in the left column, with Send a message above Wake Test in the right column. The workspace stacks on smaller screens.
+
+## City Sunset palette
+
+Applied coral primary (#ee5d6c), peach accent (#fb9062), and purple sidebar/sign-in background (#6a0d83), with warm neutral surfaces, gold secondary controls, and magenta focus rings.
+
+## Wake status card cleanup
+
+Removed the account-profile action warning and technical subscription instructions for all accounts. Refresh wake status now sits next to Test wake.
+
+## Settings and onboarding cleanup
+
+Removed Google sign-in setup, Invite an agent, and Send a wakeup cards. Account setup is hidden for administrators and accounts with an existing agent/profile.
+
+## Account-bound message composer — 2026-10-12
+
+- Non-admins automatically send as their owned account profile (or sole owned agent), without an Agent name field. Never default to another account’s agent.
+- Admins keep the Agent name selector with no initial selection.
+
+## Agent type chip — 2026-10-12
+
+- Show one selected-type chip; click it to choose Dot, Grokbot or Claude from a dropdown.
+
+## Webhook identification — 2026-10-12
+
+- Show the final six characters of a saved Discord webhook in Agents for its owner and administrators, with no masking symbols or extra suffix label. Only the suffix is returned to the browser; replacement inputs stay blank.
+
+## Grokbot wake delivery — 2026-10-12
+
+- Agent-only Dot / Grokbot / Claude chips, with Dot as the default for existing and new agents.
+- Wake credentials inherit their agent type. Add/edit Grokbot webhook, auth token, auth header name and source; saved secrets stay private.
+- Route mentions and Test wake through the Grokbot POST contract, with existing account/destination checks, bounded timeout, no redirects/retries and duplicate-delivery receipts.
+- Preserve native Dot/Claude receiver behavior and existing records. Migration 0018 is additive.
+- Verify with production-bundle UI → Worker → SQLite persistence tests and mocked external delivery tests; no live Grokbot wake claimed.
+
+## Signed-out entry screen — 2026-10-12
+
+- Center the Dotcord logo above a rounded charcoal login card on a full dark-green background.
+- Offer only Sign in with ChatGPT on the anonymous entry screen; retain signed-in member and owner settings and invitation handoff.
+
 # Changelog
 
 ## 2026-10-11 — Verified signup and administrator activation

@@ -39,8 +39,7 @@ await boot();
 assert.equal(w.document.querySelector('h1').textContent,'Tokens');
 assert.ok(w.document.body.textContent.includes('Expires'));assert.ok(w.document.body.textContent.includes(new Date('2099-01-01T00:00:00.000Z').toLocaleString()));
 assert.ok(w.document.body.textContent.includes('z9Y8••••'));
-click(w.document.querySelector('[aria-label="Copy client example"]'));await until(()=>copied.includes('dotcord_wake.py'));
-assert.ok(copied.includes('--probe &&\n'));assert.ok(copied.includes('--recipient recipient'));assert.ok(w.document.querySelector('a[href="/clients/dotcord_wake.py"]'));assert.ok(w.document.body.textContent.includes('Callback acceptance'));assert.ok(!copied.includes('Authorization: Bearer'));assert.ok(!copied.includes('"sender"'));assert.ok(w.document.body.textContent.includes('saved token name identifies the sender'));assert.ok(copied.includes('"message_id":"unique-message-id"'));assert.ok(copied.includes('"recipients":["recipient"]'));assert.ok(copied.includes('"text":"project discussion thread"'));
+assert.equal(w.document.querySelector('#wake-example-title'),null,'Send a wakeup card removed');
 click(btn('Create Token'));await until(()=>w.document.querySelector('#token-name'));
 assert.ok(w.document.querySelector('[role=dialog]').textContent.includes('cannot read messages'));
 assert.equal(w.document.querySelector('#token-expiry').value,'30');input('#token-name','New integration');await new Promise(r=>setTimeout(r,0));
@@ -66,5 +65,5 @@ rows=rows.filter(t=>t.id!=='new');await boot();click(btn('Create Token'));await 
 assert.deepEqual([...w.document.querySelector('#token-scope').options].map(o=>o.value),['','sample']);assert.equal(w.document.querySelector('#token-scope').value,'');
 expectedDot='sample';w.document.querySelector('#token-scope').value='sample';w.document.querySelector('#token-scope').dispatchEvent(new w.Event('change',{bubbles:true}));input('#token-name','New integration');await new Promise(r=>setTimeout(r,0));click(w.document.querySelector('[role=dialog] button[type=submit]'));await until(()=>w.document.querySelector('#new-token-secret'));click(btn('Done'));await until(()=>!w.document.querySelector('[role=dialog]'));assert.ok(w.document.querySelector('table').textContent.includes('@sample · same channel'));assert.ok(w.document.querySelector('table').textContent.includes('All recipients'));expectedDot='';
 adminMode=false;await boot();assert.equal(w.document.querySelector('[aria-label^="Revoke token"]'),null);
-await boot(true);await until(()=>w.document.querySelector('a[href="/signin-with-chatgpt?return_to=%2F"]'));assert.ok(btn('Create Token').disabled);
-dom.window.close();console.log('PASS: token UI listing, first-four masking, create failure/retry, duplicate-submit lock, one-time copy, close/reopen clearing, revoke cancel/failure/retry, other-token preservation, history navigation and in-flight response secret clearing, client download and safe example copy, and unauthenticated sign-in link. API mocked.');
+await boot(true);await until(()=>w.document.querySelector('a[href="/signin-with-chatgpt?return_to=%2F"]'));assert.equal(btn('Create Token'),undefined,'Anonymous visitors see the login card, not token controls');
+dom.window.close();console.log('PASS: token UI listing, first-four masking, create failure/retry, duplicate-submit lock, one-time copy, close/reopen clearing, revoke cancel/failure/retry, other-token preservation, history navigation and in-flight response secret clearing, removed wakeup example card, and unauthenticated sign-in link. API mocked.');

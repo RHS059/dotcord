@@ -1,5 +1,6 @@
-import { sqliteTable, text, integer, index, primaryKey } from 'drizzle-orm/sqlite-core';
-export const dots = sqliteTable('dots',{id:text('id').primaryKey(),agentType:text('agent_type').notNull().default('dot'),discordId:text('discord_id'),webhookUrl:text('webhook_url'),owner:text('owner').notNull(),created:text('created').notNull()});
+import { sql } from 'drizzle-orm';
+import { sqliteTable, text, integer, index, primaryKey, uniqueIndex } from 'drizzle-orm/sqlite-core';
+export const dots = sqliteTable('dots',{id:text('id').primaryKey(),agentType:text('agent_type').notNull().default('dot'),wakeProvider:text('wake_provider').notNull().default('dot'),discordId:text('discord_id'),webhookUrl:text('webhook_url'),owner:text('owner').notNull(),created:text('created').notNull()});
 export const subscriptions = sqliteTable('subscriptions',{id:text('id').primaryKey(),owner:text('owner').notNull(),dot:text('dot').notNull(),url:text('url').notNull(),secret:text('secret').notNull(),expires:text('expires').notNull(),scope:text('scope').notNull().default('handle'),receiverId:text('receiver_id'),receiverSecretHash:text('receiver_secret_hash'),receiverRevision:integer('receiver_revision').notNull().default(0),receiverLineage:text('receiver_lineage')});
 export const discords = sqliteTable('discords',{id:text('id').primaryKey(),owner:text('owner').notNull(),name:text('name').notNull(),connectionUrl:text('connection_url').notNull(),guildId:text('guild_id').notNull(),channelId:text('channel_id').notNull(),botToken:text('bot_token')});
 
@@ -47,7 +48,7 @@ export const googleOauthSettings = sqliteTable('google_oauth_settings',{
 });
 
 // Account-scoped receiver credentials are hash-only and cannot send or read messages.
-export const receiverCredentials = sqliteTable('receiver_credentials',{id:text('id').primaryKey(),owner:text('owner').notNull(),name:text('name').notNull(),secretHash:text('secret_hash').notNull().unique(),created:text('created').notNull(),expires:text('expires').notNull()});
+export const receiverCredentials = sqliteTable('receiver_credentials',{provider:text('provider').notNull().default('dot'),dotId:text('dot_id'),webhookUrl:text('webhook_url'),authToken:text('auth_token'),authHeader:text('auth_header'),source:text('source'),id:text('id').primaryKey(),owner:text('owner').notNull(),name:text('name').notNull(),secretHash:text('secret_hash').notNull().unique(),created:text('created').notNull(),expires:text('expires').notNull()},table=>[uniqueIndex('receiver_grokbot_dot').on(table.dotId).where(sql`${table.provider} = 'grokbot'`)]);
 
 // Bounded, content-free receipts: request retries never start another test delivery.
 export const wakeTests = sqliteTable('wake_tests',{
@@ -57,3 +58,5 @@ export const wakeTests = sqliteTable('wake_tests',{
 
 // Stable per-receiver identity; the hash alone never authorizes a request.
 export const receiverLineages = sqliteTable('receiver_lineages',{id:text('id').primaryKey(),owner:text('owner').notNull(),receiverId:text('receiver_id').notNull(),revision:integer('revision').notNull()});
+
+export const externalWakeReceipts = sqliteTable('external_wake_receipts',{id:text('id').primaryKey(),status:text('status').notNull(),expires:text('expires').notNull()});

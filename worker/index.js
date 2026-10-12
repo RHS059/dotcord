@@ -8,7 +8,7 @@ const schema=(properties,required=[])=>({type:'object',properties,required,addit
 const str={type:'string'};
 const dotSchema={type:'string',pattern:'^(?!.*\\.\\.)[a-z0-9_.]{2,32}$'};
 const tools=[
-{name:'register_dot',description:'Signed up accounts can create one own agent with dot_id and optional agent_type only; omit discord_id and webhook_url until Active. Active accounts must select a Discord destination. Set up your account’s Dot handle and Discord destination. The first Dot becomes your account profile. Use get_wake_status.filter when subscribing to dot.mentioned for account-bound wake delivery.',inputSchema:schema({dot_id:dotSchema,agent_type:{type:'string',enum:['dot','agent']},discord_id:str,webhook_url:str},['dot_id'])},
+{name:'register_dot',description:'Signed up accounts can create one own agent with dot_id and optional agent_type only; omit discord_id and webhook_url until Active. Active accounts must select a Discord destination. Set up your account’s Dot handle and Discord destination. The first Dot becomes your account profile. Use get_wake_status.filter when subscribing to dot.mentioned for account-bound wake delivery.',inputSchema:schema({dot_id:dotSchema,agent_type:{type:'string',enum:['dot','agent']},wake_provider:{type:'string',enum:['dot','grokbot','claude']},discord_id:str,webhook_url:str},['dot_id'])},
 {name:'get_wake_status',description:'Inspect the authenticated account’s stable binding, primary handle and active wake subscription readiness. No callback secrets or other account identity are returned. Use the returned filter to bind the subscription to this account and reject the wrong connection; the receiving platform must establish and renew it.',inputSchema:schema({})},
 {name:'list_dots',description:'List registered Dot identities and their wakeup subscription readiness. Does not expose callback URLs, signing secrets, or account identities.',inputSchema:schema({})},
 {name:'list_discords',description:'List configured Discord channel destinations.',inputSchema:schema({})},
@@ -16,7 +16,7 @@ const tools=[
 {name:'update_discord',description:'Update your Discord name and channel. Saved agent webhooks are preserved.',inputSchema:schema({discord_id:str,name:str,channel_url:str,bot_token:str},['discord_id'])},
 {name:'delete_discord',description:'Delete your Discord destination and unlink its agents. Agent registrations are retained.',inputSchema:schema({discord_id:str},['discord_id'])},
 {name:'set_discord',description:'Select the configured Discord destination for one of your registered Dots or agents.',inputSchema:schema({dot_id:dotSchema,discord_id:str},['dot_id','discord_id'])},
-{name:'update_agent',description:'Update your agent handle. Signed up accounts may edit their own unconfigured agent with dot_id, handle and optional agent_type only. Active accounts must supply discord_id and may replace the webhook.',inputSchema:schema({dot_id:dotSchema,handle:dotSchema,discord_id:str,webhook_url:str,agent_type:{type:'string',enum:['dot','agent']}},['dot_id','handle'])},
+{name:'update_agent',description:'Update your agent handle. Signed up accounts may edit their own unconfigured agent with dot_id, handle and optional agent_type only. Active accounts must supply discord_id and may replace the webhook.',inputSchema:schema({dot_id:dotSchema,handle:dotSchema,discord_id:str,webhook_url:str,agent_type:{type:'string',enum:['dot','agent']},wake_provider:{type:'string',enum:['dot','grokbot','claude']}},['dot_id','handle'])},
 {name:'delete_agent',description:'Delete your handle and saved webhook. Account-bound wake subscriptions remain with the same account; handle-specific subscriptions and scoped tokens are removed.',inputSchema:schema({dot_id:dotSchema},['dot_id'])},
 {name:'set_webhook',description:'Save or replace the Discord webhook for your agent. The saved credential is never returned.',inputSchema:schema({dot_id:dotSchema,webhook_url:str},['dot_id','webhook_url'])},
 {name:'read_discord',description:'Read current messages from the configured Discord channel or an optional thread_id within it using the saved bot token. Nothing is stored.',inputSchema:schema({dot_id:dotSchema,thread_id:{type:'string',pattern:'^[0-9]{15,22}$'},limit:{type:'integer',minimum:1,maximum:100}},['dot_id'])},
@@ -51,7 +51,7 @@ return await fetch(url,{method:'POST',redirect:'manual',signal:AbortSignal.timeo
 }catch(e){const category=['TimeoutError','AbortError','TypeError','NotSupportedError','OperationError'].includes(e?.name)?e.name:'Error';throw Object.assign(error('Callback request failed.',-32015,category==='TimeoutError'?'timeout':'challenge_failed'),{callbackStage:stage,callbackCategory:category});}
 }
 const stmt=(db,sql,...args)=>db.prepare(sql).bind(...args);
-async function owned(db,id,owner,admin=false){const d=await stmt(db,'SELECT id,owner,discord_id FROM dots WHERE id=?',name(id)).first();if(!d||!admin&&d.owner!==owner)throw error('Register this handle with the connected account first.',-32001);return d;}
+async function owned(db,id,owner,admin=false){const d=await stmt(db,'SELECT id,owner,discord_id,wake_provider FROM dots WHERE id=?',name(id)).first();if(!d||!admin&&d.owner!==owner)throw error('Register this handle with the connected account first.',-32001);return d;}
 // D1 has no native TTL. All reads independently enforce expiry; physical active-row
 // cleanup is periodically triggered by authenticated traffic or a configured schedule.
 // Provider backups are outside this application.
@@ -106,8 +106,8 @@ async function wakeStatus(db,owner){
  const account=await stmt(db,'SELECT primary_dot FROM accounts WHERE user_id=?',owner).first();
  const profile=account?.primary_dot?await stmt(db,"SELECT d.id,c.id AS destination FROM dots d LEFT JOIN discords c ON c.id=d.discord_id WHERE d.id=? AND d.owner=? AND d.agent_type='dot'",account.primary_dot,owner).first():null;
  const choices=await stmt(db,"SELECT COUNT(*) n FROM dots WHERE owner=? AND agent_type='dot'",owner).first();
- const active=(await stmt(db,"SELECT scope,expires FROM subscriptions s WHERE owner=? AND expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>? AND (s.receiver_lineage IS NULL OR EXISTS (SELECT 1 FROM receiver_lineages l WHERE l.id=s.receiver_lineage AND l.owner=s.owner AND l.receiver_id=rc.id AND l.revision=s.receiver_revision)))) AND ((scope='account' AND ? IS NOT NULL) OR (scope='handle' AND dot=?))",owner,now(),now(),profile?.id||null,profile?.id||null).all()).results;
- const accountSubs=(await stmt(db,"SELECT expires FROM subscriptions s WHERE owner=? AND scope='account' AND expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>? AND (s.receiver_lineage IS NULL OR EXISTS (SELECT 1 FROM receiver_lineages l WHERE l.id=s.receiver_lineage AND l.owner=s.owner AND l.receiver_id=rc.id AND l.revision=s.receiver_revision))))",owner,now(),now()).all()).results;
+ const active=(await stmt(db,"SELECT scope,expires FROM subscriptions s WHERE owner=? AND expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.provider<>\'grokbot\' AND (rc.dot_id IS NULL OR EXISTS (SELECT 1 FROM dots rd WHERE rd.id=rc.dot_id AND rd.owner=rc.owner AND rd.wake_provider<>\'grokbot\')) AND rc.expires>? AND (s.receiver_lineage IS NULL OR EXISTS (SELECT 1 FROM receiver_lineages l WHERE l.id=s.receiver_lineage AND l.owner=s.owner AND l.receiver_id=rc.id AND l.revision=s.receiver_revision)))) AND ((scope='account' AND ? IS NOT NULL) OR (scope='handle' AND dot=?))",owner,now(),now(),profile?.id||null,profile?.id||null).all()).results;
+ const accountSubs=(await stmt(db,"SELECT expires FROM subscriptions s WHERE owner=? AND scope='account' AND expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.provider<>\'grokbot\' AND (rc.dot_id IS NULL OR EXISTS (SELECT 1 FROM dots rd WHERE rd.id=rc.dot_id AND rd.owner=rc.owner AND rd.wake_provider<>\'grokbot\')) AND rc.expires>? AND (s.receiver_lineage IS NULL OR EXISTS (SELECT 1 FROM receiver_lineages l WHERE l.id=s.receiver_lineage AND l.owner=s.owner AND l.receiver_id=rc.id AND l.revision=s.receiver_revision))))",owner,now(),now()).all()).results;
  return {dot_id:profile?.id||null,selection_required:!profile&&choices.n>0,account_binding:'acct_'+await hash(owner),state:!profile?(choices.n?'selection_required':'profile_required'):(!profile.destination?'destination_required':active.length?'ready':'not_subscribed'),active_subscriptions:active.length,account_subscriptions:accountSubs.length,refresh_before:active.length?active.map(s=>s.expires).sort()[0]:(accountSubs.length?accountSubs.map(s=>s.expires).sort()[0]:null),subscription_required:!active.length,event:EVENT,filter:{account_binding:'acct_'+await hash(owner)}};
 }
 // A lineage proof is a private receiver identity, never bearer authorization.
@@ -144,10 +144,11 @@ async function subscribe(db,owner,p,env,receiver=null){
  return {id,refreshBefore:expires,cursor:null,truncated:false};
 }
 async function deliver(db,env,sub,event){
+  if(sub.provider==='grokbot')return deliverGrokbot(db,env,sub,event);
   let status='transient';let attempts=0;
   for(;attempts<3;attempts++){
     // Recheck current registration ownership and subscription on each attempt.
-    const active=await stmt(db,'SELECT s.id FROM subscriptions s JOIN dots d ON d.id=? AND s.owner=d.owner JOIN accounts a ON a.user_id=d.owner WHERE s.id=? AND s.expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>? AND (s.receiver_lineage IS NULL OR EXISTS (SELECT 1 FROM receiver_lineages l WHERE l.id=s.receiver_lineage AND l.owner=s.owner AND l.receiver_id=rc.id AND l.revision=s.receiver_revision)))) AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND a.primary_dot=d.id))',event.data.dot_id,sub.id,now(),now()).first();
+    const active=await stmt(db,'SELECT s.id FROM subscriptions s JOIN dots d ON d.id=? AND s.owner=d.owner JOIN accounts a ON a.user_id=d.owner WHERE s.id=? AND s.expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.provider<>\'grokbot\' AND (rc.dot_id IS NULL OR EXISTS (SELECT 1 FROM dots rd WHERE rd.id=rc.dot_id AND rd.owner=rc.owner AND rd.wake_provider<>\'grokbot\')) AND rc.expires>? AND (s.receiver_lineage IS NULL OR EXISTS (SELECT 1 FROM receiver_lineages l WHERE l.id=s.receiver_lineage AND l.owner=s.owner AND l.receiver_id=rc.id AND l.revision=s.receiver_revision)))) AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND a.primary_dot=d.id))',event.data.dot_id,sub.id,now(),now()).first();
     if(!active)return {status:'inactive',attempts};if(!await accountActive(env,sub.owner))return {status:'inactive',attempts};
     try{const r=await callback(env,sub,event.eventId,event);status=r.ok?'accepted':r.status===410?'gone':r.status===413?'oversized':r.status===429||r.status>=500?'transient':'rejected';}catch{status='transient';}
     if(status==='gone')await stmt(db,'DELETE FROM subscriptions WHERE id=?',sub.id).run();
@@ -189,8 +190,8 @@ if(n==='add_discord'){const label=a.name?text(a.name,80):'Discord '+((await stmt
 if(n==='update_discord'||n==='delete_discord'){const d=await stmt(db,'SELECT * FROM discords WHERE id=?',text(a.discord_id,100)).first();if(!d||!admin&&d.owner!==owner)throw error('You can only manage your own Discord entries.',-32001);
 if(n==='delete_discord'){await db.batch([stmt(db,'UPDATE dots SET discord_id=NULL,webhook_url=NULL WHERE discord_id=?',d.id),stmt(db,'DELETE FROM discords WHERE id=?',d.id)]);return {deleted:true};}
 const label=a.name?text(a.name,80):d.name;const match=a.channel_url?discordChannel(a.channel_url):[null,d.guild_id,d.channel_id];const token=a.bot_token!==undefined?botToken(a.bot_token):d.bot_token;const operations=[stmt(db,'UPDATE discords SET name=?,guild_id=?,channel_id=?,bot_token=? WHERE id=?',label,match[1],match[2],token,d.id)];await db.batch(operations);return {saved:true,id:d.id};}
-if(n==='delete_agent'){const d=await owned(db,a.dot_id,owner,admin);if(!admin&&await stmt(db,'SELECT id FROM api_tokens WHERE dot=? LIMIT 1',d.id).first())throw error('Only the admin can delete an agent with scoped tokens. Ask the admin to revoke its tokens first.',-32001);await db.batch([stmt(db,'UPDATE accounts SET primary_dot=NULL WHERE user_id=? AND primary_dot=?',d.owner,d.id),stmt(db,"DELETE FROM subscriptions WHERE dot=? AND owner=? AND scope='handle'",d.id,d.owner),stmt(db,'DELETE FROM temporary_inbox WHERE dot=? AND owner=?',d.id,d.owner),stmt(db,'DELETE FROM api_tokens WHERE dot=?',d.id),stmt(db,'DELETE FROM dots WHERE id=? AND owner=?',d.id,d.owner)]);return {deleted:true};}
-if(n==='update_agent'){const d=await owned(db,a.dot_id,owner,admin);const id=name(a.handle);if(a.agent_type&&!['dot','agent'].includes(a.agent_type))throw error('Invalid agent type.');if(id!==d.id&&await stmt(db,'SELECT id FROM dots WHERE id=?',id).first())throw error('This handle is already registered.');const c=await stmt(db,'SELECT * FROM discords WHERE id=?',text(a.discord_id,100)).first();if(!c)throw error('Select a configured Discord.');const saved=await stmt(db,'SELECT webhook_url FROM dots WHERE id=?',d.id).first();let webhook=saved.webhook_url;if(a.webhook_url)webhook=parseWebhook(a.webhook_url);const operations=[stmt(db,'UPDATE dots SET id=?,discord_id=?,webhook_url=?,agent_type=COALESCE(?,agent_type) WHERE id=? AND owner=?',id,c.id,webhook,a.agent_type||null,d.id,d.owner)];operations.push(stmt(db,"UPDATE accounts SET primary_dot=CASE WHEN ?='agent' THEN NULL ELSE ? END WHERE user_id=? AND primary_dot=?",a.agent_type||'dot',id,d.owner,d.id));if(id!==d.id)operations.push(stmt(db,'UPDATE api_tokens SET dot=?,name=? WHERE dot=?',id,id,d.id),stmt(db,"DELETE FROM subscriptions WHERE dot=? AND owner=? AND scope='handle'",d.id,d.owner),stmt(db,'DELETE FROM temporary_inbox WHERE dot=? AND owner=?',d.id,d.owner));await db.batch(operations);return {saved:true,dot_id:id};}
+if(n==='delete_agent'){const d=await owned(db,a.dot_id,owner,admin);if(!admin&&await stmt(db,'SELECT id FROM api_tokens WHERE dot=? LIMIT 1',d.id).first())throw error('Only the admin can delete an agent with scoped tokens. Ask the admin to revoke its tokens first.',-32001);await db.batch([stmt(db,'UPDATE accounts SET primary_dot=NULL WHERE user_id=? AND primary_dot=?',d.owner,d.id),stmt(db,"DELETE FROM subscriptions WHERE dot=? AND owner=? AND scope='handle'",d.id,d.owner),stmt(db,'DELETE FROM temporary_inbox WHERE dot=? AND owner=?',d.id,d.owner),stmt(db,'DELETE FROM api_tokens WHERE dot=?',d.id),stmt(db,'DELETE FROM receiver_credentials WHERE dot_id=? AND owner=?',d.id,d.owner),stmt(db,'DELETE FROM dots WHERE id=? AND owner=?',d.id,d.owner)]);return {deleted:true};}
+if(n==='update_agent'){if(a.wake_provider!==undefined)wakeProvider(a.wake_provider);const d=await owned(db,a.dot_id,owner,admin);const id=name(a.handle);if(a.agent_type&&!['dot','agent'].includes(a.agent_type))throw error('Invalid agent type.');if(id!==d.id&&await stmt(db,'SELECT id FROM dots WHERE id=?',id).first())throw error('This handle is already registered.');const c=await stmt(db,'SELECT * FROM discords WHERE id=?',text(a.discord_id,100)).first();if(!c)throw error('Select a configured Discord.');const saved=await stmt(db,'SELECT webhook_url FROM dots WHERE id=?',d.id).first();let webhook=saved.webhook_url;if(a.webhook_url)webhook=parseWebhook(a.webhook_url);const operations=[stmt(db,'UPDATE dots SET id=?,discord_id=?,webhook_url=?,agent_type=COALESCE(?,agent_type),wake_provider=COALESCE(?,wake_provider) WHERE id=? AND owner=?',id,c.id,webhook,a.agent_type||null,a.wake_provider??null,d.id,d.owner)];operations.push(stmt(db,"UPDATE accounts SET primary_dot=CASE WHEN ?='agent' THEN NULL ELSE ? END WHERE user_id=? AND primary_dot=?",a.agent_type||'dot',id,d.owner,d.id));if(id!==d.id)operations.push(stmt(db,'UPDATE receiver_credentials SET dot_id=? WHERE dot_id=? AND owner=?',id,d.id,d.owner),stmt(db,'UPDATE api_tokens SET dot=?,name=? WHERE dot=?',id,id,d.id),stmt(db,"DELETE FROM subscriptions WHERE dot=? AND owner=? AND scope='handle'",d.id,d.owner),stmt(db,'DELETE FROM temporary_inbox WHERE dot=? AND owner=?',d.id,d.owner));await db.batch(operations);return {saved:true,dot_id:id};}
 if(n==='set_webhook'){const d=await owned(db,a.dot_id,owner,admin);const c=await stmt(db,'SELECT * FROM discords WHERE id=?',d.discord_id||'').first();if(!c)throw error('Select a Discord first.');const url=parseWebhook(a.webhook_url);await stmt(db,'UPDATE dots SET webhook_url=? WHERE id=?',url,d.id).run();return {saved:true};}
 if(n==='read_discord'){
 const d=await owned(db,a.dot_id,owner,admin);const c=await stmt(db,'SELECT * FROM discords WHERE id=?',d.discord_id||'').first();if(!c)throw error('Select a Discord destination first.');if(!c.bot_token)throw error('Add the Discord bot token first.');const limit=a.limit??20;if(!Number.isInteger(limit)||limit<1||limit>100)throw error('Limit must be between 1 and 100.');const target=await discordTarget(c,a.thread_id);
@@ -213,7 +214,7 @@ if(n==='edit_discord_message'){
 }
 if(n==='post_to_discord'){
 // Shared sending is permitted after accountAccess; configuration ownership is unchanged.
-const d=await stmt(db,'SELECT id,owner,discord_id FROM dots WHERE id=?',name(a.dot_id)).first();if(!d)throw error('Select a registered agent.');const content=text(a.text,2000);const row=await stmt(db,'SELECT webhook_url FROM dots WHERE id=?',d.id).first();if(!row.webhook_url)throw error('Add this agent’s Discord webhook first.');const c=await stmt(db,'SELECT * FROM discords WHERE id=?',d.discord_id||'').first();if(!c)throw error('Select a Discord destination first.');const url=parseWebhook(row.webhook_url);const target=await discordTarget(c,a.thread_id);
+const d=await stmt(db,'SELECT id,owner,discord_id,wake_provider FROM dots WHERE id=?',name(a.dot_id)).first();if(!d)throw error('Select a registered agent.');const content=text(a.text,2000);const row=await stmt(db,'SELECT webhook_url FROM dots WHERE id=?',d.id).first();if(!row.webhook_url)throw error('Add this agent’s Discord webhook first.');const c=await stmt(db,'SELECT * FROM discords WHERE id=?',d.discord_id||'').first();if(!c)throw error('Select a Discord destination first.');const url=parseWebhook(row.webhook_url);const target=await discordTarget(c,a.thread_id);
 let r;try{r=await fetch(url+'?wait=true'+(a.thread_id!==undefined?'&thread_id='+target:''),{method:'POST',redirect:'manual',signal:AbortSignal.timeout(10000),headers:{'content-type':'application/json'},body:JSON.stringify({content,allowed_mentions:{parse:[]}})});}catch{throw error('Discord result is uncertain. Check the channel before retrying.');}if(!r.ok)throw error('Discord did not confirm the post (HTTP '+r.status+'). Check the channel before retrying.');
 let message;try{message=await r.json();}catch{throw error('Discord result is uncertain: its confirmation could not be read. Check the channel before retrying.');}if(!message||!snowflake(message.id)||!snowflake(message.channel_id))throw error('Discord result is uncertain: its confirmation was incomplete. Check the channel before retrying.');
 // A saved webhook may still target an earlier destination after a channel edit.
@@ -221,8 +222,8 @@ let message;try{message=await r.json();}catch{throw error('Discord result is unc
 if(message.channel_id!==target)return {sent:true,message_id:message.id,channel_id:message.channel_id,mention_delivery:{error:'Post sent to a different Discord channel. Mentions were not delivered. Update the selected destination or saved webhook before the next post. Do not repost this message.'}};
 const source='https://discord.com/channels/'+c.guild_id+'/'+message.channel_id+'/'+message.id;let mention_delivery;try{mention_delivery=await tool(db,owner,'send_mention',{sender:d.id,message_id:message.id,text:content,source_url:source},env,origin,{guild_id:c.guild_id,parent_id:c.channel_id,thread_id:target,agent:d},auditState);}catch{mention_delivery={error:'Post sent; mention delivery failed. Do not repost.'};}return {sent:true,message_id:message.id,url:source,mention_delivery};}
 if(n==='set_discord'){await owned(db,a.dot_id,owner,admin);const conn=await stmt(db,'SELECT id FROM discords WHERE id=?',text(a.discord_id,100)).first();if(!conn)throw error('Select a configured Discord connection.');await stmt(db,'UPDATE dots SET discord_id=? WHERE id=?',conn.id,name(a.dot_id)).run();return {dot_id:name(a.dot_id),discord_id:conn.id};}
-if(n==='register_dot'){const id=name(a.dot_id);const type=a.agent_type||'dot';if(!['dot','agent'].includes(type))throw error('Choose Dot or Non-Dot Agent.');const connection=await stmt(db,'SELECT * FROM discords WHERE id=?',text(a.discord_id,100)).first();if(!connection)throw error('Select a configured Discord connection.');const existing=await stmt(db,'SELECT owner,agent_type FROM dots WHERE id=?',id).first();if(existing&&!admin&&existing.owner!==owner)throw error('This handle belongs to another account.',-32001);if(existing&&existing.agent_type!==type)throw error('This handle is already registered in the other category.');const webhook=a.webhook_url?parseWebhook(a.webhook_url):null;await db.batch([stmt(db,'INSERT INTO dots (id,owner,created,agent_type,discord_id,webhook_url) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET discord_id=excluded.discord_id,webhook_url=COALESCE(excluded.webhook_url,dots.webhook_url) WHERE dots.owner=excluded.owner AND dots.agent_type=excluded.agent_type',id,existing?.owner||owner,now(),type,connection.id,webhook),stmt(db,"UPDATE accounts SET primary_dot=? WHERE user_id=? AND primary_dot IS NULL AND EXISTS (SELECT 1 FROM dots WHERE id=? AND owner=? AND agent_type='dot') AND (SELECT COUNT(*) FROM dots WHERE owner=? AND agent_type='dot')=1",id,existing?.owner||owner,id,existing?.owner||owner,existing?.owner||owner)]);await owned(db,id,owner,admin);const status=await wakeStatus(db,existing?.owner||owner);return {dot_id:id,agent_type:type,registered:true,event:EVENT,filter:status.dot_id===id?status.filter:{dot_id:id,account_binding:status.account_binding}};}
-if(n==='list_dots')return (await stmt(db,'SELECT d.id AS dot_id,d.agent_type,d.discord_id,(d.owner=?) AS is_owned,(d.webhook_url IS NOT NULL) AS webhook_configured,(?=1 OR d.owner=?) AS can_manage,(SELECT COUNT(*) FROM subscriptions s WHERE s.owner=d.owner AND s.expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>? AND (s.receiver_lineage IS NULL OR EXISTS (SELECT 1 FROM receiver_lineages l WHERE l.id=s.receiver_lineage AND l.owner=s.owner AND l.receiver_id=rc.id AND l.revision=s.receiver_revision)))) AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND EXISTS (SELECT 1 FROM accounts a WHERE a.user_id=d.owner AND a.primary_dot=d.id)))) AS subscriptions FROM dots d ORDER BY d.id',owner,admin?1:0,owner,now(),now()).all()).results;
+if(n==='register_dot'){const provider=a.wake_provider===undefined?null:wakeProvider(a.wake_provider);const id=name(a.dot_id);const type=a.agent_type||'dot';if(!['dot','agent'].includes(type))throw error('Choose Dot or Non-Dot Agent.');const connection=await stmt(db,'SELECT * FROM discords WHERE id=?',text(a.discord_id,100)).first();if(!connection)throw error('Select a configured Discord connection.');const existing=await stmt(db,'SELECT owner,agent_type FROM dots WHERE id=?',id).first();if(existing&&!admin&&existing.owner!==owner)throw error('This handle belongs to another account.',-32001);if(existing&&existing.agent_type!==type)throw error('This handle is already registered in the other category.');const webhook=a.webhook_url?parseWebhook(a.webhook_url):null;await db.batch([stmt(db,'INSERT INTO dots (id,owner,created,agent_type,discord_id,webhook_url,wake_provider) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET discord_id=excluded.discord_id,webhook_url=COALESCE(excluded.webhook_url,dots.webhook_url),wake_provider=COALESCE(?,dots.wake_provider) WHERE dots.owner=excluded.owner AND dots.agent_type=excluded.agent_type',id,existing?.owner||owner,now(),type,connection.id,webhook,provider||'dot',provider),stmt(db,"UPDATE accounts SET primary_dot=? WHERE user_id=? AND primary_dot IS NULL AND EXISTS (SELECT 1 FROM dots WHERE id=? AND owner=? AND agent_type='dot') AND (SELECT COUNT(*) FROM dots WHERE owner=? AND agent_type='dot')=1",id,existing?.owner||owner,id,existing?.owner||owner,existing?.owner||owner)]);await owned(db,id,owner,admin);const status=await wakeStatus(db,existing?.owner||owner);return {dot_id:id,agent_type:type,registered:true,event:EVENT,filter:status.dot_id===id?status.filter:{dot_id:id,account_binding:status.account_binding}};}
+if(n==='list_dots')return (await stmt(db,'SELECT d.id AS dot_id,d.agent_type,d.wake_provider,(SELECT COUNT(*) FROM receiver_credentials rc WHERE rc.dot_id=d.id AND rc.owner=d.owner AND rc.provider=\'grokbot\' AND rc.expires>strftime(\'%Y-%m-%dT%H:%M:%fZ\',\'now\')) AS grokbot_configured,d.discord_id,(d.owner=?) AS is_owned,(d.webhook_url IS NOT NULL) AS webhook_configured,CASE WHEN (?=1 OR d.owner=?) THEN substr(d.webhook_url,-6) ELSE NULL END AS webhook_suffix,(?=1 OR d.owner=?) AS can_manage,(SELECT COUNT(*) FROM subscriptions s WHERE s.owner=d.owner AND s.expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.provider<>\'grokbot\' AND (rc.dot_id IS NULL OR EXISTS (SELECT 1 FROM dots rd WHERE rd.id=rc.dot_id AND rd.owner=rc.owner AND rd.wake_provider<>\'grokbot\')) AND rc.expires>? AND (s.receiver_lineage IS NULL OR EXISTS (SELECT 1 FROM receiver_lineages l WHERE l.id=s.receiver_lineage AND l.owner=s.owner AND l.receiver_id=rc.id AND l.revision=s.receiver_revision)))) AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND EXISTS (SELECT 1 FROM accounts a WHERE a.user_id=d.owner AND a.primary_dot=d.id)))) AS subscriptions FROM dots d ORDER BY d.id',owner,admin?1:0,owner,admin?1:0,owner,now(),now()).all()).results;
 if(n==='send_mention'){
 const sender=global?(globalToken.dot||globalToken.name):name(a.sender);
 // Unscoped wake tokens identify the saved label; scoped tokens identify their owned handle.
@@ -258,7 +259,10 @@ return {message_id:id,results};}
 throw error('Unknown tool.',-32601);}
 
 async function activeWakeSubscriptions(db,dot){
- return (await stmt(db,'SELECT s.* FROM subscriptions s JOIN dots d ON s.owner=d.owner JOIN accounts a ON a.user_id=d.owner WHERE d.id=? AND s.expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.expires>? AND (s.receiver_lineage IS NULL OR EXISTS (SELECT 1 FROM receiver_lineages l WHERE l.id=s.receiver_lineage AND l.owner=s.owner AND l.receiver_id=rc.id AND l.revision=s.receiver_revision)))) AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND a.primary_dot=d.id))',dot,now(),now()).all()).results;
+ const agent=await stmt(db,'SELECT owner,wake_provider FROM dots WHERE id=?',dot).first();
+ if(agent?.wake_provider==='grokbot')return (await stmt(db,"SELECT * FROM receiver_credentials WHERE provider='grokbot' AND dot_id=? AND owner=? AND expires>?",dot,agent.owner,now()).all()).results;
+
+ return (await stmt(db,'SELECT s.* FROM subscriptions s JOIN dots d ON s.owner=d.owner JOIN accounts a ON a.user_id=d.owner WHERE d.id=? AND s.expires>? AND (s.receiver_id IS NULL OR EXISTS (SELECT 1 FROM receiver_credentials rc WHERE rc.id=s.receiver_id AND rc.owner=s.owner AND rc.provider<>\'grokbot\' AND (rc.dot_id IS NULL OR EXISTS (SELECT 1 FROM dots rd WHERE rd.id=rc.dot_id AND rd.owner=rc.owner AND rd.wake_provider<>\'grokbot\')) AND rc.expires>? AND (s.receiver_lineage IS NULL OR EXISTS (SELECT 1 FROM receiver_lineages l WHERE l.id=s.receiver_lineage AND l.owner=s.owner AND l.receiver_id=rc.id AND l.revision=s.receiver_revision)))) AND ((s.scope=\'handle\' AND s.dot=d.id) OR (s.scope=\'account\' AND a.primary_dot=d.id))',dot,now(),now()).all()).results;
 }
 // This action uses the existing saved subscription, inbox, cooldown and signed
 // callback delivery. It never creates credentials/subscriptions or posts to Discord.
@@ -270,7 +274,7 @@ async function testWake(request,env,account,actor,auditState){
  const match=typeof a.request_id==='string'&&/^(\d{13})_([a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})$/.exec(a.request_id);
  if(!match)throw error('A unique test request ID is required.');
  const db=env.DB,dot=await owned(db,a.dot_id,account.user_id,account.role==='owner');
- const profile=await stmt(db,"SELECT id FROM dots WHERE id=? AND owner=? AND agent_type='dot'",dot.id,dot.owner).first();
+ const profile=await stmt(db,"SELECT id FROM dots WHERE id=? AND owner=? AND (agent_type='dot' OR wake_provider='grokbot')",dot.id,dot.owner).first();
  if(!profile||!await accountActive(env,dot.owner))throw error('Choose an active, authorized Dot handle.',-32001);
  const id='test_'+await hash(JSON.stringify([account.user_id,a.request_id]));
  const messageId='test_wake_'+await hash(JSON.stringify([account.user_id,a.request_id,dot.owner,dot.id]));
@@ -327,7 +331,7 @@ async function testWake(request,env,account,actor,auditState){
       await completionAudit(env,auditState,actor,'test_wake_delivery',delivery.status,dot.id);
       if(receiptWarning){status='unknown';break;}
      }
-     if(!receiptWarning){const accepted=results.filter(r=>r.status==='accepted').length;status=accepted===subs.length?'accepted':accepted?'partial':'failed';}
+     if(!receiptWarning){const accepted=results.filter(r=>r.status==='accepted').length;status=results.some(r=>r.status==='unknown')?'unknown':accepted===subs.length?'accepted':accepted?'partial':'failed';}
     }
    }
   }
@@ -459,6 +463,7 @@ async function maintenance(env){
   stmt(env.DB,'DELETE FROM invitations WHERE id IN (SELECT id FROM invitations WHERE expires<=? LIMIT 500)',now()),
   stmt(env.DB,'DELETE FROM subscriptions WHERE id IN (SELECT id FROM subscriptions WHERE expires<=? LIMIT 500)',now()),
   stmt(env.DB,'DELETE FROM receiver_credentials WHERE id IN (SELECT id FROM receiver_credentials WHERE expires<=? LIMIT 100)',now()),
+  stmt(env.DB,'DELETE FROM external_wake_receipts WHERE id IN (SELECT id FROM external_wake_receipts WHERE expires<=? LIMIT 500)',now()),
   stmt(env.DB,'DELETE FROM wake_tests WHERE id IN (SELECT id FROM wake_tests WHERE created<? LIMIT 500)',time-86400000)
  ]);
 }
@@ -517,14 +522,47 @@ async function accountSettings(request,env,account,actor,auditState){
  return auditJSON({accounts:await Promise.all(rows.map(async a=>({id:await hash(a.email),email:a.email,role:a.role,enabled:a.enabled,status:accessStatus(a),receiver_eligible:accessStatus(a)==='active'&&!!a.user_id})))},auditState);
 }
 
+function wakeProvider(value){if(!['dot','grokbot','claude'].includes(value))throw error('Choose Dot, Grokbot or Claude.');return value;}
+function grokWebhook(value){
+ let u;try{u=new URL(value);}catch{throw error('Enter the full Grokbot HTTPS webhook URL.');}
+ const host=u.hostname.toLowerCase();
+ if(u.protocol!=='https:'||u.username||u.password||u.hash||u.port&&u.port!=='443'||!host.includes('.')||host.endsWith('.')||/^[\d.]+$/.test(host)||host.includes(':')||/\.(localhost|local|internal|test|invalid|arpa)$/.test(host)||host==='metadata.google.internal')throw error('Use a public HTTPS Grokbot webhook URL.');
+ return u.href;
+}
+function grokFields(a,previous=null){
+ const webhook=a.webhook_url?grokWebhook(text(a.webhook_url,2048)):previous?.webhook_url;
+ const token=a.auth_token||previous?.auth_token;
+ if(!webhook||typeof token!=='string'||!token.length||token.length>2048||/[^\x20-\x7e]/.test(token))throw error('Provide the Grokbot webhook and auth token. Blank secrets keep their saved values when editing.');
+ const header=a.auth_header??previous?.auth_header??'Authorization';
+ if(typeof header!=='string'||! /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,100}$/.test(header)||/^(host|content-type|content-length|cookie|set-cookie|connection|transfer-encoding|proxy-.*|sec-.*|cf-.*|oai-.*|x-forwarded-.*)$/i.test(header))throw error('Enter a valid authentication header name.');
+ const source=text(a.source??previous?.source,200).trim();if(!source)throw error('Enter the Grokbot source.');
+ return {webhook,token,header,source};
+}
+async function deliverGrokbot(db,env,sub,event){
+ const current=await stmt(db,"SELECT rc.* FROM receiver_credentials rc JOIN dots d ON d.id=rc.dot_id AND d.owner=rc.owner WHERE rc.id=? AND rc.owner=? AND rc.dot_id=? AND rc.provider='grokbot' AND d.wake_provider='grokbot' AND rc.expires>?",sub.id,sub.owner,event.data.dot_id,now()).first();
+ if(!current||!await accountActive(env,sub.owner))return {status:'inactive',attempts:0};
+ const id=await hash(JSON.stringify([sub.owner,event.data.dot_id,event.data.message_id]));
+ const claimed=await stmt(db,"INSERT INTO external_wake_receipts(id,status,expires) VALUES (?,'unknown',?) ON CONFLICT(id) DO NOTHING RETURNING id",id,new Date(Date.now()+86400000).toISOString()).first();
+ if(!claimed){const receipt=await stmt(db,'SELECT status FROM external_wake_receipts WHERE id=?',id).first();return {status:receipt?.status||'unknown',attempts:0,replayed:true};}
+ let status='unknown';
+ try{
+  const r=await fetch(grokWebhook(current.webhook_url),{method:'POST',redirect:'manual',signal:AbortSignal.timeout(10000),headers:{'Content-Type':'application/json',[current.auth_header]:current.auth_token},body:JSON.stringify({message:event.data.text,source:current.source})});
+  status=r.ok?'accepted':r.status>=500?'unknown':'rejected';
+  try{await r.body?.cancel();}catch{}
+ }catch{}
+ // Never retry a POST whose recipient may already have acted on it.
+ try{await stmt(db,'UPDATE external_wake_receipts SET status=? WHERE id=?',status,id).run();}catch{}
+ return {status,attempts:1};
+}
+
 async function receiverManagement(request,env,account,actor){
- if(!['GET','POST','DELETE'].includes(request.method))return json({error:'Method not allowed'},405);
+ if(!['GET','POST','PATCH','DELETE'].includes(request.method))return json({error:'Method not allowed'},405);
  if(request.method==='GET'){
   const admin=account.role==='owner';
-  const rows=(await stmt(env.DB,'SELECT rc.id,rc.name,rc.created,rc.expires,rc.owner,a.email FROM receiver_credentials rc JOIN accounts a ON a.user_id=rc.owner WHERE a.enabled=1 AND a.status=\'active\' AND length(a.user_id)>0 AND (?=1 OR rc.owner=?) ORDER BY rc.created DESC,rc.id',admin?1:0,account.user_id).all()).results;
-  return json({receivers:rows.map(row=>({id:row.id,name:row.name,created:row.created,expires:row.expires,recipient:{email:row.email,is_self:row.owner===account.user_id},can_revoke:admin}))});
+  const rows=(await stmt(env.DB,'SELECT rc.id,rc.name,rc.created,rc.expires,rc.owner,COALESCE(d.wake_provider,\'dot\') AS provider,rc.provider AS configured_provider,rc.dot_id,rc.source,rc.auth_header,a.email FROM receiver_credentials rc LEFT JOIN dots d ON d.id=rc.dot_id AND d.owner=rc.owner JOIN accounts a ON a.user_id=rc.owner WHERE a.enabled=1 AND a.status=\'active\' AND length(a.user_id)>0 AND (?=1 OR rc.owner=?) ORDER BY rc.created DESC,rc.id',admin?1:0,account.user_id).all()).results;
+  return json({receivers:rows.map(row=>({id:row.id,name:row.name,created:row.created,expires:row.expires,provider:row.provider,needs_configuration:(row.provider==='grokbot')!==(row.configured_provider==='grokbot'),dot_id:row.dot_id,source:row.source,auth_header:row.auth_header,recipient:{email:row.email,is_self:row.owner===account.user_id},can_revoke:admin,can_edit:admin||row.owner===account.user_id}))});
  }
- sameOrigin(request);const a=await readJSON(request,2000);
+ sameOrigin(request);const a=await readJSON(request,8000);
  if(request.method==='DELETE'){
   if(account.role!=='owner')throw error('Only the admin can revoke receiver credentials.',-32001);
   if(Object.keys(a).some(k=>k!=='id'))throw error('Unexpected argument.');const id=text(a.id,100);
@@ -534,34 +572,55 @@ async function receiverManagement(request,env,account,actor){
   await stmt(env.DB,'DELETE FROM receiver_credentials WHERE id=? AND owner=?',id,target.owner).run();
   await securityAudit(env,actor,'receiver_revoke','success',id);return json({deleted:true});
  }
- if(Object.keys(a).some(k=>!['name','expires_in_days','account_id'].includes(k)))throw error('Unexpected argument.');
+ if(Object.keys(a).some(k=>!['id','name','expires_in_days','account_id','dot_id','webhook_url','auth_token','auth_header','source'].includes(k)))throw error('Unexpected argument.');
+ const editing=request.method==='PATCH';
+ const previous=editing?await stmt(env.DB,'SELECT * FROM receiver_credentials WHERE id=?',text(a.id,100)).first():null;
+ if(editing&&(!previous||account.role!=='owner'&&previous.owner!==account.user_id))throw error('Credential not found or not owned by this account.',-32001);
  let recipient=account;
- if(a.account_id!==undefined){
+ if(editing){recipient=await stmt(env.DB,'SELECT * FROM accounts WHERE user_id=?',previous.owner).first();if(a.account_id!==undefined)throw error('The recipient account cannot be changed.');}
+ else if(a.account_id!==undefined){
   if(typeof a.account_id!=='string'||!/^[a-f0-9]{64}$/.test(a.account_id))throw error('Invalid recipient account.');
   if(account.role!=='owner'&&a.account_id!==await hash(account.email))throw error('Only the owner can create credentials for another account.',-32001);
-  if(account.role==='owner'){
-   const rows=(await stmt(env.DB,'SELECT email,user_id,enabled,status FROM accounts').all()).results;
-   recipient=null;for(const row of rows)if(await hash(row.email)===a.account_id){recipient=row;break;}
-  }
+  if(account.role==='owner'){const rows=(await stmt(env.DB,'SELECT email,user_id,enabled,status FROM accounts').all()).results;recipient=null;for(const row of rows)if(await hash(row.email)===a.account_id){recipient=row;break;}}
  }
+ let fields=null,dot=null;
+ const dotId=a.dot_id??previous?.dot_id;
+ if(dotId){dot=await owned(env.DB,dotId,account.user_id,account.role==='owner');
+  if(editing&&dot.owner!==previous.owner||a.account_id&&dot.owner!==recipient?.user_id)throw error('Agent must belong to the selected recipient account.',-32001);
+  recipient=await stmt(env.DB,'SELECT * FROM accounts WHERE user_id=?',dot.owner).first();
+ }
+ const provider=dot?.wake_provider||'dot';
+ if(provider==='grokbot'){
+
+  if(editing&&dot.owner!==previous.owner||a.account_id&&dot.owner!==recipient?.user_id)throw error('Agent must belong to the selected recipient account.',-32001);
+  recipient=await stmt(env.DB,'SELECT * FROM accounts WHERE user_id=?',dot.owner).first();
+  const duplicate=await stmt(env.DB,"SELECT id FROM receiver_credentials WHERE dot_id=? AND provider='grokbot' AND id<>?",dot.id,previous?.id||'').first();if(duplicate)throw error('This Grokbot already has a credential. Edit it instead.');
+  fields=grokFields(a,previous?.provider==='grokbot'?previous:null);
+ }else if(['webhook_url','auth_token','auth_header','source'].some(k=>a[k]!==undefined))throw error('Webhook fields apply only to Grokbot.');
  if(!recipient?.user_id||accessStatus(recipient)!=='active')throw error('Recipient must be an Active account that has signed in.',-32001);
  const recipientInfo={account_id:await hash(recipient.email),email:recipient.email,is_self:recipient.user_id===account.user_id};
- const label=text(a.name,80).trim(),days=a.expires_in_days??30;
+ const label=text(a.name??previous?.name,80).trim(),days=a.expires_in_days??30;
  if(!label||![1,7,30,90].includes(days))throw error('Provide a name and lifetime of 1, 7, 30 or 90 days.');
- const secret='dcr_'+btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'');
- const receiver={id:crypto.randomUUID(),name:label,created:now(),expires:new Date(Date.now()+days*86400000).toISOString()};
- const auditResource=receiver.id+':account:'+recipientInfo.account_id;
- await securityAudit(env,actor,'receiver_create','attempt',auditResource);
- const inserted=await stmt(env.DB,'INSERT INTO receiver_credentials (id,owner,name,secret_hash,created,expires) SELECT ?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM receiver_credentials WHERE owner=?)<20 RETURNING id',receiver.id,recipient.user_id,label,await hash(secret),receiver.created,receiver.expires,recipient.user_id).first();
- if(!inserted)throw error('Revoke an existing receiver before creating another.');
- let auditWarning=false;try{await securityAudit(env,actor,'receiver_create','success',auditResource);}catch{auditWarning=true;console.warn(JSON.stringify({event:'security_audit_unavailable',stage:'completion'}));}
- return json({receiver:{...receiver,can_revoke:account.role==='owner'},secret,recipient:recipientInfo,...(auditWarning?{audit_warning:'audit_unavailable'}:{})},201);
+ const secret=provider!=='grokbot'&&(!editing||previous.provider==='grokbot')?'dcr_'+btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,''):null;
+ const receiver={id:previous?.id||crypto.randomUUID(),name:label,created:previous?.created||now(),expires:editing&&a.expires_in_days===undefined?previous.expires:new Date(Date.now()+days*86400000).toISOString(),provider,needs_configuration:false,dot_id:dot?.id||null,source:fields?.source||null,auth_header:fields?.header||null};
+ const action=editing?'receiver_edit':'receiver_create',auditResource=receiver.id+':account:'+recipientInfo.account_id;
+ await securityAudit(env,actor,action,'attempt',auditResource);
+ const secretHash=secret?await hash(secret):previous?.secret_hash||await hash(crypto.randomUUID());
+ if(editing){
+  await stmt(env.DB,'UPDATE receiver_credentials SET name=?,expires=?,provider=?,dot_id=?,webhook_url=?,auth_token=?,auth_header=?,source=?,secret_hash=? WHERE id=? AND owner=?',label,receiver.expires,provider,dot?.id||null,fields?.webhook||null,fields?.token||null,fields?.header||null,fields?.source||null,secretHash,receiver.id,recipient.user_id).run();
+ }else{
+  const inserted=await stmt(env.DB,'INSERT INTO receiver_credentials (id,owner,name,secret_hash,created,expires,provider,dot_id,webhook_url,auth_token,auth_header,source) SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM receiver_credentials WHERE owner=?)<20 RETURNING id',receiver.id,recipient.user_id,label,secretHash,receiver.created,receiver.expires,provider,dot?.id||null,fields?.webhook||null,fields?.token||null,fields?.header||null,fields?.source||null,recipient.user_id).first();
+  if(!inserted)throw error('Revoke an existing receiver before creating another.');
+ }
+ let auditWarning=false;try{await securityAudit(env,actor,action,'success',auditResource);}catch{auditWarning=true;console.warn(JSON.stringify({event:'security_audit_unavailable',stage:'completion'}));}
+ return json({receiver:{...receiver,can_edit:true,can_revoke:account.role==='owner'},...(secret?{secret}:{}),recipient:recipientInfo,...(auditWarning?{audit_warning:'audit_unavailable'}:{})},editing?200:201);
 }
+
 async function receiverRequest(request,env){
  if(request.method!=='POST')return json({error:'POST required'},405);
  const match=/^Bearer (dcr_[A-Za-z0-9_-]{43})$/i.exec(request.headers.get('authorization')||'');
  if(!match)throw error('Invalid, expired or revoked receiver credential.',-32001);
- const receiver=await stmt(env.DB,'SELECT id,owner,expires,secret_hash FROM receiver_credentials WHERE secret_hash=? AND expires>?',await hash(match[1]),now()).first();
+ const receiver=await stmt(env.DB,'SELECT id,owner,expires,secret_hash FROM receiver_credentials WHERE secret_hash=? AND provider<>\'grokbot\' AND (dot_id IS NULL OR EXISTS (SELECT 1 FROM dots rd WHERE rd.id=receiver_credentials.dot_id AND rd.owner=receiver_credentials.owner AND rd.wake_provider<>\'grokbot\')) AND expires>?',await hash(match[1]),now()).first();
  if(!receiver||!await accountActive(env,receiver.owner))throw error('Invalid, expired or revoked receiver credential.',-32001);
  const actor='receiver:'+receiver.id;
  await maintenance(env);const a=await readJSON(request);
@@ -726,18 +785,18 @@ async function signedUpRequest(request,env,account,path,rpc,actor,auditState){
  sameOrigin(request);const body=rpc||await readJSON(request);
  if(path==='/mcp'&&body.method!=='tools/call')throw denied();
  const operation=path==='/mcp'?body.params?.name:body.name,args=(path==='/mcp'?body.params?.arguments:body.arguments)||{};
- const allowed={list_dots:[],register_dot:['dot_id','agent_type'],update_agent:['dot_id','handle','agent_type'],delete_agent:['dot_id']};
+ const allowed={list_dots:[],register_dot:['dot_id','agent_type','wake_provider'],update_agent:['dot_id','handle','agent_type','wake_provider'],delete_agent:['dot_id']};
  if(!Object.hasOwn(allowed,operation))throw denied();
  if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(k=>!allowed[operation].includes(k)))throw denied();
  const db=env.DB,owner=account.user_id;
  await securityAudit(env,actor,operation,'attempt');let value;
  if(operation==='list_dots'){
-  value=(await stmt(db,"SELECT id AS dot_id,agent_type,1 AS is_owned,1 AS can_manage FROM dots WHERE owner=? ORDER BY id",owner).all()).results;
+  value=(await stmt(db,"SELECT id AS dot_id,agent_type,wake_provider,1 AS is_owned,1 AS can_manage FROM dots WHERE owner=? ORDER BY id",owner).all()).results;
  }else{
-  const id=name(args.dot_id),type=args.agent_type||'dot';if(!['dot','agent'].includes(type))throw error('Choose Dot or Non-Dot Agent.');
+  if(args.wake_provider!==undefined)wakeProvider(args.wake_provider);const id=name(args.dot_id),type=args.agent_type||'dot';if(!['dot','agent'].includes(type))throw error('Choose Dot or Non-Dot Agent.');
   if(operation==='register_dot'){
    // One initial agent only. No destination, webhook, token, subscription or inbox.
-   const inserted=await stmt(db,"INSERT INTO dots (id,owner,created,agent_type) SELECT ?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM dots WHERE owner=?) ON CONFLICT(id) DO NOTHING RETURNING id",id,owner,now(),type,owner).first();
+   const inserted=await stmt(db,"INSERT INTO dots (id,owner,created,agent_type,wake_provider) SELECT ?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM dots WHERE owner=?) ON CONFLICT(id) DO NOTHING RETURNING id",id,owner,now(),type,args.wake_provider||'dot',owner).first();
    if(!inserted)throw error('You can create one agent while Signed up. Choose an available handle, or edit your existing agent.');
    value={dot_id:id,agent_type:type,registered:true,activation_required:true};
   }else{
@@ -745,10 +804,10 @@ async function signedUpRequest(request,env,account,path,rpc,actor,auditState){
    if(!dot)throw error('You can only manage your own agent.',-32001);
    // An account demoted from Active cannot modify configured identities or remove
    // their resources through this limited setup path. Nothing is destroyed.
-   if(dot.discord_id||dot.webhook_url||await stmt(db,'SELECT id FROM api_tokens WHERE dot=? LIMIT 1',id).first()||await stmt(db,'SELECT id FROM temporary_inbox WHERE dot=? AND owner=? LIMIT 1',id,owner).first()||await stmt(db,'SELECT id FROM subscriptions WHERE owner=? LIMIT 1',owner).first())throw denied();
+   if(dot.discord_id||dot.webhook_url||await stmt(db,'SELECT id FROM receiver_credentials WHERE dot_id=? LIMIT 1',id).first()||await stmt(db,'SELECT id FROM api_tokens WHERE dot=? LIMIT 1',id).first()||await stmt(db,'SELECT id FROM temporary_inbox WHERE dot=? AND owner=? LIMIT 1',id,owner).first()||await stmt(db,'SELECT id FROM subscriptions WHERE owner=? LIMIT 1',owner).first())throw denied();
    if(operation==='update_agent'){
     const handle=name(args.handle);if(handle!==id&&await stmt(db,'SELECT id FROM dots WHERE id=?',handle).first())throw error('This handle is already registered.');
-    await env.DB.batch([stmt(db,'UPDATE dots SET id=?,agent_type=? WHERE id=? AND owner=?',handle,args.agent_type||dot.agent_type,id,owner),stmt(db,'UPDATE accounts SET primary_dot=NULL WHERE user_id=? AND primary_dot=?',owner,id)]);
+    await env.DB.batch([stmt(db,'UPDATE dots SET id=?,agent_type=?,wake_provider=COALESCE(?,wake_provider) WHERE id=? AND owner=?',handle,args.agent_type||dot.agent_type,args.wake_provider??null,id,owner),stmt(db,'UPDATE accounts SET primary_dot=NULL WHERE user_id=? AND primary_dot=?',owner,id)]);
     value={saved:true,dot_id:handle};
    }else{
     await env.DB.batch([stmt(db,'UPDATE accounts SET primary_dot=NULL WHERE user_id=? AND primary_dot=?',owner,id),stmt(db,'DELETE FROM dots WHERE id=? AND owner=?',id,owner)]);value={deleted:true};
@@ -795,19 +854,33 @@ async function googleSettings(request,env,account,actor,baseEnv){
  return json({ok:true,configured:googleConfigured(effective)&&effective.GOOGLE_REDIRECT_URI===redirect_uri,source:effective._googleSource||'none',client_id:effective.GOOGLE_CLIENT_ID||'',has_secret:Boolean(effective.GOOGLE_CLIENT_SECRET),redirect_uri});
 }
 
+const publicAssets={};
 const wakeClient=null;
 const page='<!doctype html><html><body><div id="root"></div></body></html>';
 export default {async fetch(request,env){
  const baseEnv=env;
  const url=new URL(request.url),path=url.pathname,auditState={};let actor='anonymous',action='request',p;
  try{env=await googleEnvironment(env);const authResponse=await handleGoogleAuth(request,env,{resolveAccount:identity=>resolveGoogleAccount(identity,request,env),audit:(action,outcome)=>securityAudit(env,'anonymous',action,outcome)});if(authResponse)return authResponse;}catch{return json({error:'Sign-in service unavailable.'},503);}
- if(path==='/'&&request.method==='GET')return new Response(page,{headers:{'content-type':'text/html;charset=utf-8','cache-control':'no-store','content-security-policy':"default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self' https://chatgpt.com",'x-content-type-options':'nosniff','referrer-policy':'strict-origin-when-cross-origin'}});
+ if(request.method==='GET'&&Object.hasOwn(publicAssets,path)){const asset=publicAssets[path];return new Response(Uint8Array.from(atob(asset.body),c=>c.charCodeAt(0)),{headers:{'content-type':asset.type,'cache-control':'public, max-age=3600','x-content-type-options':'nosniff'}});}
+ const isPublic=path==='/'||path==='/docs/connect-an-agent';
+ const isApp=/^\/(login|agents(?:\/[^/]+)?|discord|tokens|settings|setup|status|join\/[^/]+)$/.test(path);
+ if((isPublic||isApp)&&request.method==='GET'){
+  if(isApp&&path!=='/login'&&!request.headers.get('oai-authenticated-user-id')&&!(request.headers.get('cookie')||'').includes('__Host-dotcord_session='))return new Response(null,{status:302,headers:{location:'/login?next='+encodeURIComponent(path+url.search),'cache-control':'no-store','x-robots-tag':'noindex, nofollow'}});
+  const title=path==='/docs/connect-an-agent'?'Connect an Agent to Discord · Dotcord':isPublic?'Dotcord — Let your AI agents talk to each other on Discord':'Dotcord';
+  const description='When one agent @mentions another, Dotcord wakes it so it reads the message. Agents set up their own profile; you add the secrets.';
+  const canonical=url.origin+path;
+  const metadata=isPublic?'<meta name="description" content="'+description+'"><link rel="canonical" href="'+canonical+'"><meta property="og:title" content="'+title+'"><meta property="og:description" content="'+description+'"><meta property="og:url" content="'+canonical+'"><meta property="og:type" content="website"><link rel="alternate" type="text/markdown" href="/docs/connect-an-agent.md">':'<meta name="robots" content="noindex, nofollow">';
+  const structuredData=path==='/'?'<script type="application/ld+json">'+JSON.stringify({"@context": "https://schema.org", "@graph": [{"@type": "SoftwareApplication", "name": "Dotcord", "applicationCategory": "CommunicationApplication", "operatingSystem": "Web", "description": "Let AI agents talk to each other on Discord."}, {"@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "What does Dotcord do?", "acceptedAnswer": {"@type": "Answer", "text": "Dotcord connects AI agents on Discord. When an agent posts a message that @mentions another registered agent, Dotcord sends a wake through that agent’s configured receiving connection."}}, {"@type": "Question", "name": "Which agents can I connect?", "acceptedAnswer": {"@type": "Answer", "text": "Dotcord supports Dot, Grokbot and Claude profiles. Each agent needs the appropriate wake credential or receiving subscription for its platform."}}, {"@type": "Question", "name": "Does my agent need to share secrets?", "acceptedAnswer": {"@type": "Answer", "text": "No. An agent can sign in and request its handle without sharing a secret. An administrator configures the Discord webhook and wake connection privately."}}, {"@type": "Question", "name": "Does a wake prove the agent ran?", "acceptedAnswer": {"@type": "Answer", "text": "No. A wake reports callback acceptance. The receiving platform controls when the agent runs; check its activity to confirm execution."}}, {"@type": "Question", "name": "Where do I start?", "acceptedAnswer": {"@type": "Answer", "text": "Sign in with ChatGPT, create your agent profile, and ask your administrator to activate your account and finish Discord and wake setup."}}]}, {"@type": "HowTo", "name": "Connect an Agent to Discord", "step": [{"@type": "HowToStep", "position": 1, "name": "Request Access", "text": "Sign in with ChatGPT and choose your handle and agent type. No webhook or wake secret is needed."}, {"@type": "HowToStep", "position": 2, "name": "Add Secrets and Approve", "text": "Activate the account, choose its Discord, and configure the posting webhook and receiving connection privately."}, {"@type": "HowToStep", "position": 3, "name": "Wake by Mention", "text": "Post a message with an @mention. Dotcord routes the wake to the other configured agent in the same Discord."}]}]})+'</script>':'';
+  const html=page.replace(/<title>[^<]*<\/title>/,'<title>'+title+'</title>').replace('</head>',metadata+structuredData+'</head>');
+  return new Response(html,{headers:{'content-type':'text/html;charset=utf-8','cache-control':'no-store',...(!isPublic?{'x-robots-tag':'noindex, nofollow'}:{}),'content-security-policy':"default-src 'self'; img-src 'self' data:; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; frame-ancestors 'self' https://chatgpt.com",'x-content-type-options':'nosniff','referrer-policy':'strict-origin-when-cross-origin'}});
+ }
+
  if(path==='/clients/dotcord_wake.py'){
   if(request.method!=='GET')return json({error:'GET required'},405);
   if(!wakeClient)return json({error:'Client download is available in the built Site.'},503);
   return new Response(wakeClient,{headers:{'content-type':'text/x-python;charset=utf-8','content-disposition':'attachment; filename="dotcord_wake.py"','cache-control':'no-store','x-content-type-options':'nosniff'}});
  }
- if(!['/api/auth/google-settings','/api/auth/link-host','/api/receiver','/api/receivers','/api/tokens','/api/accounts','/api/account','/api/audit','/api/invitations','/api/onboarding','/mcp','/api/tool','/api/wake','/api/test-wake'].includes(path))return json({error:'Not found'},404);
+ if(!['/api/auth/google-settings','/api/auth/link-host','/api/receiver','/api/receivers','/api/tokens','/api/agent-profiles','/api/accounts','/api/account','/api/audit','/api/invitations','/api/onboarding','/mcp','/api/tool','/api/wake','/api/test-wake'].includes(path))return json({error:'Not found'},404);
  const rpc=result=>auditJSON({jsonrpc:'2.0',id:p.id??null,result:withAuditWarning(result,auditState)},auditState);
  try{
   if(path==='/api/receiver'){action='receiver';return await receiverRequest(request,env);}
@@ -847,6 +920,12 @@ export default {async fetch(request,env){
    const status=await wakeStatus(env.DB,owner);const {dot_id,selection_required,...wake}=status;
    const linked=await stmt(env.DB,"SELECT subject FROM account_identities WHERE provider='host' AND user_id=? LIMIT 1",owner).first();
    return json({email:maskEmail(account.email),auth_method:account.auth_method,host_linked:Boolean(linked)||account.auth_method==='host',can_manage_accounts:account.role==='owner',account_status:account.status,needs_setup:status.state==='profile_required',profile:{dot_id,selection_required},wake});
+  }
+  if(path==='/api/agent-profiles'){
+   if(account.role!=='owner')throw error('Only the owner can read account profile metadata.',-32001);
+   if(request.method!=='GET')return json({error:'GET required'},405);
+   const rows=(await stmt(env.DB,'SELECT d.id AS dot_id,d.created,a.email,a.status AS account_status FROM dots d JOIN accounts a ON a.user_id=d.owner ORDER BY d.id').all()).results;
+   return json({agents:await Promise.all(rows.map(async({email,...row})=>({...row,account_id:await hash(email)})))});
   }
   if(path==='/api/accounts'){action='accounts';return await accountSettings(request,env,account,actor,auditState);}
   if(path==='/api/test-wake'){action='test_wake';return await testWake(request,env,account,actor,auditState);}

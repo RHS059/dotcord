@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="720" viewBox="0 0 720 720" role="img" aria-labelledby="title desc">
+  <title id="title">Dotcord logo</title>
+  <desc id="desc">A purple circular badge with a sunset-colored game controller, glasses, directional pad and four buttons.</desc>
+  <defs><linearGradient id="sunset-character" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#eeaf61"/><stop offset="1" stop-color="#fb9062"/></linearGradient></defs>
+  <g transform="translate(-536 -137)">
+    <circle id="badge" cx="896" cy="497" r="348" fill="#6a0d83"/>
+    <path id="controller" fill="url(#sunset-character)" d="M 882 272 C 885 265 890 262 896 262 C 902 262 907 266 910 273 L 1101 658 C 1112 679 1099 695 1083 695 H 1006 C 993 695 984 688 973 679 L 960 669 C 951 662 943 658 931 658 H 859 C 848 658 840 662 831 669 L 817 680 C 805 689 797 695 783 695 H 709 C 691 695 680 679 690 658 Z"/>
+    <g id="glasses" fill="url(#sunset-character)" stroke="#6a0d83">
+      <path d="M 869 472 Q 896 449 922 472" fill="none" stroke-width="18"/>
+      <ellipse cx="811" cy="482" rx="60" ry="62" stroke-width="22"/>
+      <ellipse cx="981" cy="482" rx="60" ry="62" stroke-width="22"/>
+    </g>
+    <path id="directional-pad" fill="#6a0d83" d="M 790 588 H 801 Q 807 588 807 594 V 610 H 822 Q 828 610 828 616 V 626 Q 828 632 822 632 H 807 V 648 Q 807 654 801 654 H 790 Q 784 654 784 648 V 632 H 769 Q 763 632 763 626 V 616 Q 763 610 769 610 H 784 V 594 Q 784 588 790 588 Z"/>
+    <g id="action-buttons" fill="#6a0d83">
+      <circle cx="993" cy="597" r="11.5"/>
+      <circle cx="967" cy="621" r="11.5"/>
+      <circle cx="1019" cy="621" r="11.5"/>
+      <circle cx="993" cy="645" r="11.5"/>
+    </g>
+  </g>
+</svg>

@@ -57,7 +57,7 @@ try{
  assert.equal((await tool('register_dot',{dot_id:'second_agent'},fresh)).status,400,'Only one initial agent');
  assert.deepEqual({...sql.prepare('SELECT owner,discord_id,webhook_url FROM dots WHERE id=?').get('pending_agent')},{owner:'new-member',discord_id:null,webhook_url:null});
  const pendingList=(await tool('list_dots',{},fresh)).data;assert.equal(pendingList.length,1);assert.equal(pendingList[0].dot_id,'pending_agent');
- assert.deepEqual(Object.keys(pendingList[0]).sort(),['agent_type','can_manage','dot_id','is_owned']);
+ assert.deepEqual(Object.keys(pendingList[0]).sort(),['agent_type','can_manage','dot_id','is_owned','wake_provider']);
  assert.equal((await tool('update_agent',{dot_id:'admin_dot',handle:'stolen'},fresh)).status,403);
  assert.equal((await tool('delete_agent',{dot_id:'admin_dot'},fresh)).status,403);
  assert.equal((await tool('update_agent',{dot_id:'pending_agent',handle:'pending_renamed',agent_type:'agent'},fresh)).status,200);

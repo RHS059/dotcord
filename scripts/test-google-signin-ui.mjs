@@ -10,14 +10,17 @@ for(const available of [true,false,'error']){
   if(path==='/api/auth/providers'){providerCalls++;if(available==='error')throw Error('Offline');return Response.json({google:available,chatgpt:true});}
   return Response.json({error:'Sign in to Dotcord to continue.'},{status:401});
  };
- w.eval(script);await until(()=>providerCalls>0&&w.document.querySelector('a[href^="/signin-with-chatgpt"]'));await new Promise(r=>setTimeout(r,20));
- const google=w.document.querySelector('a[href="/auth/google/start"]');assert.equal(!!google,available===true,'Only offer Google when server configuration enables it');
- if(google){assert.equal(google.textContent,'Continue with Google');assert.equal(google.target,'_top');}
+ w.eval(script);await until(()=>w.document.querySelector('.signin-card'));await new Promise(r=>setTimeout(r,20));
+ assert.equal(providerCalls,0,'Anonymous entry offers only ChatGPT without fetching other providers');
+ assert.equal(w.document.querySelector('a[href="/auth/google/start"]'),null);
+ assert.equal(w.document.querySelector('.sidebar'),null,'Anonymous page has no app sidebar');
+ assert.equal(w.document.querySelector('#signin-title').textContent,'Log in or sign up');
  const chatgpt=w.document.querySelector('a[href^="/signin-with-chatgpt"]');assert.equal(chatgpt.getAttribute('href'),'/signin-with-chatgpt?return_to=%2F');assert.equal(chatgpt.target,'_top');
- assert.ok([...w.document.querySelectorAll('button')].some(b=>b.textContent==='Clear Google sign-in'),'Expired session recovery remains available when Google is unconfigured');
+ assert.equal(chatgpt.textContent,'Sign in with ChatGPT');
+ assert.equal(w.document.querySelectorAll('.signin-card a,.signin-card button,.signin-card input').length,1,'ChatGPT is the only entry action');
  assert.equal(w.localStorage.length,0);assert.equal(w.sessionStorage.length,0);dom.window.close();
 }
-console.log('PASS Google sign-in UI: configured provider link, unavailable/network-error fallback, retained ChatGPT access. API mocked.');
+console.log('PASS anonymous sign-in UI: ChatGPT-only entry regardless of Google configuration, no sidebar, top-level auth navigation. API mocked.');
 for(const authMethod of ['google','host']){
  const dom=new JSDOM(html,{url:'https://shared.test/?tab=settings',runScripts:'outside-only',pretendToBeVisual:true}),w=dom.window,calls=[];let linkFails=true;
  w.ResizeObserver=class{observe(){}unobserve(){}disconnect(){}};w.HTMLElement.prototype.scrollIntoView=function(){};w.matchMedia=()=>({matches:false,addListener(){},removeListener(){}});
@@ -32,6 +35,7 @@ for(const authMethod of ['google','host']){
  };
  const button=t=>[...w.document.querySelectorAll('button')].find(b=>b.textContent.trim()===t),click=b=>{assert.ok(b);b.dispatchEvent(new w.MouseEvent('click',{bubbles:true}));};
  w.eval(script);await until(()=>w.document.querySelector('[aria-label="Sign-in settings"]'));
+ assert.equal(w.document.querySelector('.signin-card'),null,'Signed-in members and owners never see the anonymous login card');
  if(authMethod==='host'){
   await until(()=>w.document.querySelector('a[href="/auth/google/start"]'));
   assert.equal(button('Link ChatGPT account'),undefined);assert.equal(button('Sign out of Google'),undefined);
@@ -72,30 +76,13 @@ for(const owner of [false,true]){
   return Response.json([]);
  };
  const button=t=>[...w.document.querySelectorAll('button')].find(b=>b.textContent.trim()===t);
- w.eval(script);await until(()=>w.document.querySelector('[aria-label="Sign-in settings"]'));
+ w.eval(script);await until(()=>owner?w.document.querySelector('[aria-label="Account status for owner"]')||calls.some(c=>c.path==='/api/accounts'):w.document.querySelector('[aria-label="Sign-in settings"]'));
+ await new Promise(r=>setTimeout(r,20));
+ assert.equal(!!w.document.querySelector('[aria-label="Sign-in settings"]'),!owner);
+ assert.equal(w.document.querySelector('.signin-card'),null,'Signed-in members and owners never see the anonymous login card');
  assert.equal(button('Link ChatGPT account'),undefined,'Already linked identities do not prompt again');
- if(owner){
-  await until(()=>w.document.querySelector('input[name="google-client-id"]'));
-  const input=name=>w.document.querySelector('input[name="'+name+'"]');
-  const change=(name,value)=>{const el=input(name);Object.getOwnPropertyDescriptor(w.HTMLInputElement.prototype,'value').set.call(el,value);el.dispatchEvent(new w.Event('input',{bubbles:true}));};
-  assert.ok(w.document.body.textContent.includes('https://shared.test/auth/google/callback'));
-  assert.equal(input('google-client-secret').type,'password');
-  change('google-client-id','client.apps.googleusercontent.com');change('google-client-secret','synthetic-secret');
-  w.document.querySelector('[aria-label="Google sign-in setup"] form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
-  await until(()=>w.document.body.textContent.includes('Google credentials saved.'));
-  assert.equal(input('google-client-secret').value,'');
-  assert.equal(w.document.body.textContent.includes('synthetic-secret'),false);
-  w.document.querySelector('[aria-label="Google sign-in setup"] form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
-  await until(()=>calls.filter(c=>c.path==='/api/auth/google-settings'&&c.options.method==='POST').length===2&&!button('Save Google sign-in').disabled);
-  await new Promise(r=>setTimeout(r,30));fail=true;change('google-client-secret','failed-secret');
-  await new Promise(r=>setTimeout(r,10));
-  w.document.querySelector('[aria-label="Google sign-in setup"] form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
-  await until(()=>w.document.body.textContent.includes('Unable to save settings.'));
-  assert.equal(input('google-client-secret').value,'','Failed submission clears secret too');
- }else{
-  assert.equal(w.document.querySelector('[aria-label="Google sign-in setup"]'),null);
-  assert.equal(calls.some(c=>c.path==='/api/auth/google-settings'),false);
- }
+ assert.equal(w.document.querySelector('[aria-label="Google sign-in setup"]'),null);
+ assert.equal(calls.some(c=>c.path==='/api/auth/google-settings'),false);
  assert.equal(w.localStorage.length,0);assert.equal(w.sessionStorage.length,0);dom.window.close();
 }
-console.log('PASS Google setup UI: owner-only panel, masked write-only secret, secret clearing on success/failure, blank retention, no browser storage, linked-account controls. API mocked.');
+console.log('PASS Google setup UI: removed setup panel for all accounts, no browser storage, linked-account controls. API mocked.');

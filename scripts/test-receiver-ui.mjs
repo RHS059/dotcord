@@ -17,7 +17,7 @@ async function boot(unauthorized=false) {
  w.fetch = async(path,options={})=>{
    if(path==='/api/auth/providers')return Response.json({google:false,chatgpt:true});
    if(path==='/api/account')return Response.json(unauthorized?{error:'Sign in to continue.'}:{can_manage_accounts:ownerMode,auth_method:'google',host_linked:true},{status:unauthorized?401:200});
-   if(path==='/api/tool')return Response.json(JSON.parse(options.body).name==='list_dots'?[{dot_id:'sample',is_owned:1,can_manage:1,discord_id:'one',webhook_configured:1},{dot_id:'other',is_owned:0,can_manage:1,discord_id:'one',webhook_configured:1}]:[]);
+   if(path==='/api/tool')return Response.json([]); // Legacy account-only credentials; agent-bound forms are tested in test-grokbot-ui.mjs.
    if(path==='/api/accounts')return Response.json({accounts:[{id:'target',email:'recipient@example.test',role:'member',enabled:1,receiver_eligible:true},{id:'disabled',email:'disabled@example.test',role:'member',enabled:0,receiver_eligible:false},{id:'new',email:'new@example.test',role:'member',enabled:1,receiver_eligible:false}]});
    assert.equal(path,'/api/receivers');
    assert.equal(options.credentials,'same-origin');assert.equal(options.cache,'no-store');
@@ -42,7 +42,7 @@ assert.ok(w.document.querySelector('[aria-label="Wake receiver credentials"]'));
 assert.ok(w.document.body.textContent.includes('Expires'));assert.ok(w.document.body.textContent.includes(new Date('2099-01-01T00:00:00.000Z').toLocaleString()));
 assert.ok(w.document.body.textContent.includes('••••••••'));
 click(btn('Create Credential'));await until(()=>w.document.querySelector('#receiver-name'));
-assert.ok(w.document.querySelector('[role=dialog]').textContent.includes('Choose the account whose wake subscriptions'));
+assert.ok(w.document.querySelector('[role=dialog]').textContent.includes('Pair a receiver with the selected agent'));
 assert.ok(w.document.querySelector('#receiver-recipient'));assert.equal(w.document.querySelector('#receiver-expiry').value,'30');input('#receiver-name','New integration');await new Promise(r=>setTimeout(r,0));
 failCreate=true;click(w.document.querySelector('[role=dialog] button[type=submit]'));await until(()=>w.document.body.textContent.includes('Creation rejected.'));assert.equal(w.document.querySelector('#receiver-name').value,'New integration');
 failCreate=false;const submit=w.document.querySelector('[role=dialog] button[type=submit]');click(submit);click(submit);
@@ -67,7 +67,7 @@ const selector=w.document.querySelector('#receiver-recipient');assert.equal(sele
 selector.value='target';selectedAccount='target';selector.dispatchEvent(new w.Event('change',{bubbles:true}));input('#receiver-name','New integration');await new Promise(r=>setTimeout(r,0));click(w.document.querySelector('[role=dialog] button[type=submit]'));await until(()=>w.document.querySelector('#new-receiver-secret'));
 assert.ok(w.document.querySelector('[role=dialog]').textContent.includes('Recipient: recipient@example.test'));assert.ok(w.document.querySelector('[role=dialog]').textContent.includes('appears in this admin list'));click(btn('Done'));await until(()=>!w.document.querySelector('[role=dialog]'));assert.ok(w.document.querySelector('[aria-label="Revoke receiver New integration"]'));
 const receiverSection=()=>w.document.querySelector('[aria-label="Wake receiver credentials"]');
-assert.ok(receiverSection().textContent.includes('New integration'));assert.ok(receiverSection().textContent.includes('recipient@example.test'));assert.ok(receiverSection().textContent.includes('This admin list'));
+assert.ok(receiverSection().textContent.includes('New integration'));assert.ok(receiverSection().textContent.includes('recipient@example.test'));assert.ok(receiverSection().textContent.includes('Wake credentials use the type selected in Agents'));
 assert.ok(!w.document.documentElement.outerHTML.includes(fakeSecret));
 await boot();assert.ok(receiverSection().textContent.includes('New integration'));assert.ok(receiverSection().textContent.includes('recipient@example.test'));assert.ok(w.document.querySelector('[aria-label="Revoke receiver New integration"]'));
 click(btn('Create Credential'));await until(()=>w.document.querySelector('#receiver-recipient'));assert.equal(w.document.querySelector('#receiver-recipient').value,'');click(btn('Cancel'));selectedAccount='';ownerMode=false;

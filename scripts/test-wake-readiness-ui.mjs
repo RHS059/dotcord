@@ -23,10 +23,10 @@ for(const scenario of ['missing','ready','expired','destination','select']){
  };
  w.eval(script);await until(()=>w.document.querySelector('[aria-label="Account wake readiness"]'));
  const panel=()=>w.document.querySelector('[aria-label="Account wake readiness"]'),text=()=>panel().textContent;
- assert.ok(text().includes('acct_example'));assert.ok(text().includes('get_wake_status'));assert.ok(text().includes('{"account_binding":"acct_example"}')); 
- if(scenario==='destination')assert.ok(text().includes('choose a Discord destination for this account'));
+ assert.ok(!text().includes('acct_example'));assert.ok(!text().includes('get_wake_status'));assert.ok(!text().includes('Action needed'));
+ const buttons=[...panel().querySelectorAll('button')];assert.equal(buttons.find(b=>b.textContent==='Test wake').parentElement,buttons.find(b=>b.textContent==='Refresh wake status').parentElement);
  if(scenario==='ready')assert.ok(text().includes('Wake ready — active receiving subscription'));
- if(scenario==='missing'||scenario==='expired'){assert.ok(text().includes('Action needed'));assert.ok(!text().includes('Wake ready'));assert.ok(text().includes('saved for posting'),'Saved webhook must not imply readiness');}
+ if(scenario==='missing'||scenario==='expired'){assert.ok(!text().includes('Wake ready'));assert.ok(text().includes('saved for posting'),'Saved webhook must not imply readiness');}
  if(scenario==='select'){
   const input=w.document.querySelector('#account-handle');assert.deepEqual([...input.options].map(o=>o.value),['','agent_one'],'Only own Dot profile candidates are shown');
   input.value='agent_one';input.dispatchEvent(new w.Event('change',{bubbles:true}));await new Promise(r=>setTimeout(r,0));
@@ -39,4 +39,4 @@ for(const scenario of ['missing','ready','expired','destination','select']){
  assert.equal(calls.some(c=>c.path.includes('subscribe')),false,'Browser must not claim to create platform subscriptions');
  assert.equal(w.localStorage.length,0);dom.window.close();
 }
-console.log('PASS account wake readiness UI: saved webhook versus readiness, expiration, bound account identifier, owned profile choice, failed save recovery. API mocked.');
+console.log('PASS account wake readiness UI: saved webhook versus readiness, expiration, no profile warning or connection instructions, adjacent test/refresh controls, owned profile choice, failed save recovery. API mocked.');

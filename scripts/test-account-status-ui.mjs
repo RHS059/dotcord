@@ -24,12 +24,12 @@ function boot({status='signed_up',tab='tokens',owner=false,defer=false,agents=[]
    if(body.name==='list_dots')return Response.json(state.agents);
    if(body.name==='list_discords'){assert.notEqual(state.status,'signed_up');return Response.json([]);}
    if(body.name==='register_dot'){
-    assert.deepEqual(Object.keys(body.arguments).sort(),['agent_type','dot_id']);
+    assert.deepEqual(Object.keys(body.arguments).sort(),['agent_type','dot_id','wake_provider']);
     if(state.fail)return Response.json({error:'That handle is already registered.'},{status:409});
     state.agents=[{...body.arguments,is_owned:1,can_manage:1}];return Response.json({registered:true});
    }
    if(body.name==='update_agent'){
-    assert.deepEqual(Object.keys(body.arguments).sort(),['agent_type','dot_id','handle']);
+    assert.deepEqual(Object.keys(body.arguments).sort(),['agent_type','dot_id','handle','wake_provider']);
     assert.equal(body.arguments.dot_id,state.agents[0].dot_id);state.agents=[{dot_id:body.arguments.handle,agent_type:body.arguments.agent_type,is_owned:1,can_manage:1}];return Response.json({saved:true});
    }
    if(body.name==='delete_agent'){assert.deepEqual(body.arguments,{dot_id:state.agents[0].dot_id});state.agents=[];return Response.json({deleted:true});}
@@ -66,7 +66,7 @@ click(button('Add Agent'));await until(()=>w.document.querySelector('#signup-han
 x.state.fail=true;click(button('Save Agent'));await until(()=>w.document.body.textContent.includes('That handle is already registered.'));assert.equal(w.document.querySelector('#signup-handle').value,'own_agent');assert.equal(button('Save Agent').disabled,false);
 x.state.fail=false;click(button('Save Agent'));click(button('Save Agent'));await until(()=>!w.document.querySelector('[role=dialog]')&&w.document.querySelector('[aria-label="Edit @own_agent"]'));
 assert.equal(x.calls.filter(call=>call.body?.name==='register_dot').length,2,'A failed attempt and one successful attempt; double click does not duplicate');assert.equal(button('Add Agent').disabled,true,'Only one agent can be created before activation');
-click(w.document.querySelector('[aria-label="Edit @own_agent"]'));await until(()=>w.document.querySelector('#signup-handle'));input('#signup-handle','renamed_agent');click(w.document.querySelector('#signup-agent-type'));await pause();click(button('Save Agent'));await until(()=>w.document.querySelector('[aria-label="Edit @renamed_agent"]'));
+click(w.document.querySelector('[aria-label="Edit @own_agent"]'));await until(()=>w.document.querySelector('#signup-handle'));input('#signup-handle','renamed_agent');const provider=w.document.querySelector('select[aria-label="Agent type"]');provider.value='grokbot';provider.dispatchEvent(new w.Event('change',{bubbles:true}));await pause();click(button('Save Agent'));await until(()=>w.document.querySelector('[aria-label="Edit @renamed_agent"]'));
 assert.equal(x.state.agents[0].agent_type,'agent');assert.equal(x.calls.some(call=>call.body?.name==='list_discords'),false);
 click(w.document.querySelector('[aria-label="Delete @renamed_agent"]'));await until(()=>w.document.querySelector('[role=alertdialog]'));click(button('Cancel'));await until(()=>!w.document.querySelector('[role=alertdialog]'));assert.equal(x.state.agents.length,1);
 click(w.document.querySelector('[aria-label="Delete @renamed_agent"]'));await until(()=>w.document.querySelector('[role=alertdialog]'));click([...w.document.querySelectorAll('[role=alertdialog] button')].find(el=>el.textContent==='Delete'));await until(()=>x.state.agents.length===0&&!w.document.querySelector('[role=alertdialog]'));assert.equal(button('Add Agent').disabled,false);
@@ -81,7 +81,7 @@ x=boot({status:'active',tab:'settings',owner:true});await until(()=>w.document.q
 for(const group of w.document.querySelectorAll('[role=radiogroup]'))assert.deepEqual([...group.querySelectorAll('input')].map(input=>input.value),['inactive','signed_up','active']);
 for(const input of w.document.querySelector('[aria-label="Account status for owner@example.test"]').querySelectorAll('input'))assert.equal(input.disabled,true);
 const member=status=>w.document.querySelector('[aria-label="'+status+' account member@example.test"]');assert.equal(member('Signed up').checked,true);
-assert.deepEqual([...w.document.querySelector('#invite-account').options].map(option=>option.value),['','owner','active'],'Invitations show active accounts only');
+assert.equal(w.document.querySelector('#invite-account'),null,'Invitation card removed');
 click(member('Active'));await until(()=>member('Active').checked&&!member('Active').disabled);assert.deepEqual(x.calls.find(call=>call.path==='/api/accounts'&&call.method==='POST').body,{account_id:'member',status:'active'});
 x.state.failAccount=true;click(member('Inactive'));await until(()=>w.document.body.textContent.includes('Account status save failed.'));assert.equal(member('Active').checked,true);assert.equal(member('Inactive').checked,false,'Rejected autosave retains the persisted status');
 x.state.failAccount=false;click(member('Signed up'));await until(()=>member('Signed up').checked&&!member('Signed up').disabled);click(member('Inactive'));await until(()=>member('Inactive').checked&&!member('Inactive').disabled);
